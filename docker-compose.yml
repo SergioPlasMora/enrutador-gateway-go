@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  gateway-go:
+    build: .
+    container_name: gateway-go
+    ports:
+      - "8080:8080" # WebSocket
+      - "8815:8815" # Arrow Flight
+    environment:
+      - WS_PORT=8080
+      - FLIGHT_PORT=8815
+    networks:
+      - gateway-network
+    restart: unless-stopped
+
+networks:
+  gateway-network:
+    driver: bridge
