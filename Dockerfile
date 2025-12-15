@@ -24,8 +24,12 @@ WORKDIR /app
 # Copiar solo el binario
 COPY --from=builder /app/gateway .
 
+# Copiar templates para el dashboard
+COPY templates/ ./templates/
+
 # Exponer puertos
 EXPOSE 8080 8815
 
 # Ejecutar
 CMD ["./gateway"]
+

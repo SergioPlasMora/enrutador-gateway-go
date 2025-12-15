@@ -1,0 +1,808 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Arrow Dashboard - WebSocket Streaming</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script type="module">
+      import { tableFromIPC } from 'https://cdn.jsdelivr.net/npm/apache-arrow@14.0.2/+esm';
+      window.Arrow = { tableFromIPC };
+    </script>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family: system-ui, -apple-system, sans-serif;
+        background: linear-gradient(135deg, #0f1419 0%, #1a1f2e 100%);
+        color: #e7e9ea;
+        min-height: 100vh;
+        padding: 1.5rem;
+      }
+
+      .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1.5rem;
+        padding-bottom: 1rem;
+        border-bottom: 1px solid #2f3336;
+      }
+      .header h1 {
+        font-size: 1.5rem;
+        background: linear-gradient(90deg, #1d9bf0, #00ba7c);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+      }
+      .header .controls {
+        display: flex;
+        gap: 0.75rem;
+        align-items: center;
+      }
+
+      input,
+      select {
+        background: #202e3a;
+        border: 1px solid #2f3336;
+        border-radius: 8px;
+        padding: 0.5rem 0.75rem;
+        color: #e7e9ea;
+        font-size: 13px;
+      }
+      input:focus,
+      select:focus {
+        outline: none;
+        border-color: #1d9bf0;
+      }
+
+      button {
+        background: linear-gradient(90deg, #1d9bf0, #0d8de0);
+        color: white;
+        border: none;
+        padding: 0.5rem 1rem;
+        border-radius: 8px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s;
+        font-size: 13px;
+      }
+      button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(29, 155, 240, 0.4);
+      }
+      button:disabled {
+        background: #38444d;
+        cursor: not-allowed;
+        transform: none;
+        box-shadow: none;
+      }
+      button.secondary {
+        background: #202e3a;
+        border: 1px solid #2f3336;
+      }
+
+      .status-bar {
+        display: flex;
+        gap: 1rem;
+        margin-bottom: 1.5rem;
+        flex-wrap: wrap;
+      }
+      .status-item {
+        background: #16202a;
+        border: 1px solid #2f3336;
+        border-radius: 10px;
+        padding: 1rem 1.5rem;
+        flex: 1;
+        min-width: 150px;
+      }
+      .status-item .label {
+        font-size: 11px;
+        color: #71767b;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      .status-item .value {
+        font-size: 1.5rem;
+        font-weight: bold;
+        margin-top: 0.25rem;
+      }
+      .status-item .value.blue {
+        color: #1d9bf0;
+      }
+      .status-item .value.green {
+        color: #00ba7c;
+      }
+      .status-item .value.orange {
+        color: #f7931a;
+      }
+      .status-item .value.purple {
+        color: #7856ff;
+      }
+
+      .connection-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.5rem 1rem;
+        background: #16202a;
+        border-radius: 20px;
+        font-size: 12px;
+      }
+      .connection-status .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #71767b;
+      }
+      .connection-status.connected .dot {
+        background: #00ba7c;
+      }
+      .connection-status.error .dot {
+        background: #f44;
+      }
+
+      .dashboard {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+        gap: 1.5rem;
+      }
+
+      .chart-card {
+        background: #16202a;
+        border: 1px solid #2f3336;
+        border-radius: 12px;
+        padding: 1.25rem;
+      }
+      .chart-card h3 {
+        font-size: 0.9rem;
+        color: #71767b;
+        margin-bottom: 1rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+      .chart-card h3::before {
+        content: "";
+        width: 8px;
+        height: 8px;
+        background: #1d9bf0;
+        border-radius: 50%;
+      }
+      .chart-container {
+        position: relative;
+        height: 250px;
+      }
+
+      .chart-card.wide {
+        grid-column: span 2;
+      }
+
+      .data-table {
+        background: #16202a;
+        border: 1px solid #2f3336;
+        border-radius: 12px;
+        padding: 1.25rem;
+        grid-column: span 2;
+        max-height: 400px;
+        overflow: auto;
+      }
+      .data-table h3 {
+        font-size: 0.9rem;
+        color: #71767b;
+        margin-bottom: 1rem;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+      th {
+        text-align: left;
+        padding: 0.75rem;
+        border-bottom: 1px solid #2f3336;
+        color: #71767b;
+        font-weight: 500;
+        position: sticky;
+        top: 0;
+        background: #16202a;
+      }
+      td {
+        padding: 0.75rem;
+        border-bottom: 1px solid #202e3a;
+      }
+      tr:hover {
+        background: #1a2836;
+      }
+
+      .progress-bar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        height: 3px;
+        background: linear-gradient(90deg, #1d9bf0, #00ba7c);
+        width: 0%;
+        transition: width 0.3s;
+        z-index: 1000;
+      }
+
+      #log {
+        position: fixed;
+        bottom: 1rem;
+        right: 1rem;
+        width: 350px;
+        max-height: 200px;
+        background: #16202a;
+        border: 1px solid #2f3336;
+        border-radius: 8px;
+        padding: 0.75rem;
+        font-size: 11px;
+        font-family: monospace;
+        overflow-y: auto;
+        z-index: 100;
+        opacity: 0.9;
+      }
+      #log:hover {
+        opacity: 1;
+      }
+      .log-entry {
+        margin: 0.2rem 0;
+      }
+      .log-time {
+        color: #71767b;
+      }
+      .log-info {
+        color: #1d9bf0;
+      }
+      .log-success {
+        color: #00ba7c;
+      }
+      .log-error {
+        color: #f44;
+      }
+
+      @media (max-width: 900px) {
+        .dashboard {
+          grid-template-columns: 1fr;
+        }
+        .chart-card.wide,
+        .data-table {
+          grid-column: span 1;
+        }
+        #log {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="progress-bar" id="progress-bar"></div>
+
+    <div class="header">
+      <h1>⚡ Arrow WebSocket Dashboard</h1>
+      <div class="controls">
+        <div class="connection-status" id="ws-status">
+          <span class="dot"></span>
+          <span id="ws-status-text">Disconnected</span>
+        </div>
+        <input
+          id="tenant"
+          value="tenant_sergio"
+          placeholder="Tenant ID"
+          style="width: 180px"
+        />
+        <select id="dataset" style="width: 180px">
+          <option value="dataset_1kb">dataset_1kb.json (1 KB)</option>
+          <option value="dataset_1mb">dataset_1mb.csv (1 MB)</option>
+          <option value="dataset_10mb" selected>dataset_10mb.csv (10 MB)</option>
+          <option value="dataset_20mb">dataset_20mb.csv (20 MB)</option>
+          <option value="dataset_30mb">dataset_30mb.csv (30 MB)</option>
+          <option value="dataset_40mb">dataset_40mb.csv (40 MB)</option>
+          <option value="dataset_50mb">dataset_50mb.csv (50 MB)</option>
+          <option value="dataset_100mb">dataset_100mb.csv (100 MB)</option>
+        </select>
+        <button onclick="loadData()" id="load-btn">🚀 Load Data</button>
+        <button onclick="clearData()" class="secondary">🗑️ Clear</button>
+      </div>
+    </div>
+
+    <div class="status-bar">
+      <div class="status-item">
+        <div class="label">Records</div>
+        <div class="value blue" id="total-records">0</div>
+      </div>
+      <div class="status-item">
+        <div class="label">Total Value</div>
+        <div class="value green" id="total-value">$0</div>
+      </div>
+      <div class="status-item">
+        <div class="label">Average</div>
+        <div class="value orange" id="avg-value">$0</div>
+      </div>
+      <div class="status-item">
+        <div class="label">Categories</div>
+        <div class="value purple" id="categories">0</div>
+      </div>
+      <div class="status-item">
+        <div class="label">Transfer Time</div>
+        <div class="value" id="load-time">0.00s</div>
+      </div>
+    </div>
+
+    <div class="dashboard">
+      <div class="chart-card">
+        <h3>Distribution by Category</h3>
+        <div class="chart-container">
+          <canvas id="categoryChart"></canvas>
+        </div>
+      </div>
+
+      <div class="chart-card">
+        <h3>Total Value by Category</h3>
+        <div class="chart-container">
+          <canvas id="valueChart"></canvas>
+        </div>
+      </div>
+
+      <div class="chart-card wide">
+        <h3>Value Distribution Histogram</h3>
+        <div class="chart-container">
+          <canvas id="histogramChart"></canvas>
+        </div>
+      </div>
+
+      <div class="data-table">
+        <h3>Sample Data <span id="table-count">(0)</span></h3>
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Name</th>
+              <th>Value</th>
+              <th>Category</th>
+              <th>Timestamp</th>
+            </tr>
+          </thead>
+          <tbody id="data-table-body">
+            <tr>
+              <td colspan="5" style="text-align: center; color: #71767b">
+                Load data to see records
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="log"></div>
+
+    <script>
+      // Estado global
+      let ws = null;
+      let allData = [];
+      let charts = {};
+      let chunks = [];
+      let startTime = 0;
+
+      // Colores del tema
+      const colors = {
+        A: { bg: "rgba(29, 155, 240, 0.7)", border: "#1d9bf0" },
+        B: { bg: "rgba(0, 186, 124, 0.7)", border: "#00ba7c" },
+        C: { bg: "rgba(247, 147, 26, 0.7)", border: "#f7931a" },
+      };
+
+      const chartDefaults = {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { labels: { color: "#71767b", font: { size: 11 } } },
+        },
+        scales: {
+          x: {
+            ticks: { color: "#71767b", font: { size: 10 } },
+            grid: { color: "#2f3336" },
+          },
+          y: {
+            ticks: { color: "#71767b", font: { size: 10 } },
+            grid: { color: "#2f3336" },
+          },
+        },
+      };
+
+      function log(msg, type = "info") {
+        const el = document.getElementById("log");
+        const time = new Date().toISOString().slice(11, 19);
+        el.innerHTML =
+          `<div class="log-entry"><span class="log-time">[${time}]</span> <span class="log-${type}">${msg}</span></div>` +
+          el.innerHTML;
+        if (el.children.length > 50) el.lastChild.remove();
+      }
+
+      function updateConnectionStatus(status) {
+        const el = document.getElementById("ws-status");
+        const text = document.getElementById("ws-status-text");
+        el.className = "connection-status " + status;
+        text.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+      }
+
+      function formatNumber(num) {
+        return new Intl.NumberFormat("en-US").format(num);
+      }
+
+      function formatCurrency(num) {
+        return new Intl.NumberFormat("en-US", {
+          style: "currency",
+          currency: "USD",
+        }).format(num);
+      }
+
+      // Conectar WebSocket
+      function connectWebSocket() {
+        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const wsUrl = `${protocol}//${window.location.host}/ws/browser`;
+
+        log(`Connecting to ${wsUrl}...`);
+        ws = new WebSocket(wsUrl);
+        ws.binaryType = "arraybuffer";
+
+        ws.onopen = () => {
+          updateConnectionStatus("connected");
+          log("WebSocket connected", "success");
+        };
+
+        ws.onclose = () => {
+          updateConnectionStatus("disconnected");
+          log("WebSocket disconnected");
+          setTimeout(connectWebSocket, 3000);
+        };
+
+        ws.onerror = (e) => {
+          updateConnectionStatus("error");
+          log("WebSocket error", "error");
+        };
+
+        ws.onmessage = handleMessage;
+      }
+
+      // Manejar mensajes del servidor
+      async function handleMessage(event) {
+        if (event.data instanceof ArrayBuffer) {
+          // Chunk binario Arrow IPC
+          chunks.push(new Uint8Array(event.data));
+          const totalBytes = chunks.reduce((sum, c) => sum + c.length, 0);
+          document.getElementById("progress-bar").style.width =
+            Math.min((totalBytes / 1000000) * 10, 100) + "%";
+          log(`Received chunk: ${(totalBytes / 1024).toFixed(0)} KB`);
+        } else {
+          // Mensaje JSON de control
+          const msg = JSON.parse(event.data);
+          log(`Control: ${msg.status}`);
+
+          if (msg.status === "complete") {
+            await processArrowData();
+          } else if (msg.status === "error") {
+            log(`Error: ${msg.error}`, "error");
+            document.getElementById("load-btn").disabled = false;
+          }
+        }
+      }
+
+      // Procesar datos Arrow
+      async function processArrowData() {
+        const loadTime = (performance.now() - startTime) / 1000;
+        document.getElementById("load-time").textContent =
+          loadTime.toFixed(2) + "s";
+
+        try {
+          // Combinar chunks
+          const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
+          const combined = new Uint8Array(totalLength);
+          let offset = 0;
+          for (const chunk of chunks) {
+            combined.set(chunk, offset);
+            offset += chunk.length;
+          }
+
+          log(`Processing ${(totalLength / 1024 / 1024).toFixed(2)} MB...`);
+
+          // Parsear Arrow IPC
+          const table = Arrow.tableFromIPC(combined);
+
+          // Convertir a array de objetos
+          allData = [];
+          const numRows = table.numRows;
+
+          // Obtener columnas
+          const columns = {};
+          for (const field of table.schema.fields) {
+            columns[field.name] = table.getChild(field.name);
+          }
+
+          // Extraer datos (sample si hay muchos)
+          const sampleSize = Math.min(numRows, 100000);
+          const step = Math.max(1, Math.floor(numRows / sampleSize));
+
+          for (let i = 0; i < numRows; i += step) {
+            const row = {};
+            for (const [name, col] of Object.entries(columns)) {
+              row[name] = col.get(i);
+            }
+            allData.push(row);
+          }
+
+          log(
+            `✓ Parsed ${formatNumber(numRows)} rows in ${loadTime.toFixed(2)}s`,
+            "success"
+          );
+
+          // Renderizar dashboard
+          updateDashboard();
+        } catch (e) {
+          log(`Parse error: ${e.message}`, "error");
+          console.error(e);
+        } finally {
+          document.getElementById("load-btn").disabled = false;
+          document.getElementById("progress-bar").style.width = "100%";
+          setTimeout(
+            () => (document.getElementById("progress-bar").style.width = "0%"),
+            1000
+          );
+        }
+      }
+
+      // Cargar datos
+      function loadData() {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          log("WebSocket not connected", "error");
+          return;
+        }
+
+        const tenant = document.getElementById("tenant").value;
+        const dataset = document.getElementById("dataset").value;
+
+        document.getElementById("load-btn").disabled = true;
+        chunks = [];
+        startTime = performance.now();
+
+        log(`Requesting: ${tenant}/${dataset}`);
+
+        ws.send(
+          JSON.stringify({
+            action: "query",
+            tenant: tenant,
+            dataset: dataset,
+          })
+        );
+      }
+
+      function updateDashboard() {
+        if (allData.length === 0) return;
+
+        // Detectar nombres de columnas
+        const firstRow = allData[0];
+        const valueCol =
+          "value" in firstRow
+            ? "value"
+            : Object.keys(firstRow).find(
+                (k) => typeof firstRow[k] === "number"
+              );
+        const catCol =
+          "category" in firstRow
+            ? "category"
+            : Object.keys(firstRow).find(
+                (k) =>
+                  typeof firstRow[k] === "string" && firstRow[k].length < 10
+              );
+
+        // Stats
+        const values = allData.map((r) => r[valueCol] || 0);
+        const totalValue = values.reduce((sum, v) => sum + v, 0);
+        const avgValue = totalValue / allData.length;
+        const categories = [...new Set(allData.map((r) => r[catCol]))].filter(
+          Boolean
+        );
+
+        document.getElementById("total-records").textContent = formatNumber(
+          allData.length
+        );
+        document.getElementById("total-value").textContent =
+          formatCurrency(totalValue);
+        document.getElementById("avg-value").textContent =
+          formatCurrency(avgValue);
+        document.getElementById("categories").textContent = categories.length;
+
+        // Charts
+        updateCategoryChart(catCol);
+        updateValueChart(catCol, valueCol);
+        updateHistogramChart(valueCol);
+        updateTable();
+      }
+
+      function updateCategoryChart(catCol) {
+        const ctx = document.getElementById("categoryChart");
+        const counts = {};
+        allData.forEach((r) => {
+          const cat = r[catCol] || "Unknown";
+          counts[cat] = (counts[cat] || 0) + 1;
+        });
+
+        if (charts.category) charts.category.destroy();
+
+        charts.category = new Chart(ctx, {
+          type: "doughnut",
+          data: {
+            labels: Object.keys(counts),
+            datasets: [
+              {
+                data: Object.values(counts),
+                backgroundColor: Object.keys(counts).map(
+                  (c, i) => colors[c]?.bg || `hsla(${i * 60}, 70%, 50%, 0.7)`
+                ),
+                borderColor: Object.keys(counts).map(
+                  (c, i) => colors[c]?.border || `hsl(${i * 60}, 70%, 50%)`
+                ),
+                borderWidth: 2,
+              },
+            ],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: {
+                position: "right",
+                labels: { color: "#71767b", font: { size: 12 }, padding: 15 },
+              },
+            },
+          },
+        });
+      }
+
+      function updateValueChart(catCol, valueCol) {
+        const ctx = document.getElementById("valueChart");
+        const totals = {};
+        allData.forEach((r) => {
+          const cat = r[catCol] || "Unknown";
+          totals[cat] = (totals[cat] || 0) + (r[valueCol] || 0);
+        });
+
+        if (charts.value) charts.value.destroy();
+
+        charts.value = new Chart(ctx, {
+          type: "bar",
+          data: {
+            labels: Object.keys(totals),
+            datasets: [
+              {
+                label: "Total Value",
+                data: Object.values(totals),
+                backgroundColor: Object.keys(totals).map(
+                  (c, i) => colors[c]?.bg || `hsla(${i * 60}, 70%, 50%, 0.7)`
+                ),
+                borderColor: Object.keys(totals).map(
+                  (c, i) => colors[c]?.border || `hsl(${i * 60}, 70%, 50%)`
+                ),
+                borderWidth: 2,
+                borderRadius: 6,
+              },
+            ],
+          },
+          options: {
+            ...chartDefaults,
+            plugins: { legend: { display: false } },
+          },
+        });
+      }
+
+      function updateHistogramChart(valueCol) {
+        const ctx = document.getElementById("histogramChart");
+        const values = allData
+          .map((r) => r[valueCol] || 0)
+          .filter((v) => !isNaN(v));
+
+        const min = Math.min(...values);
+        const max = Math.max(...values);
+        const bucketCount = 20;
+        const bucketSize = (max - min) / bucketCount || 1;
+
+        const buckets = new Array(bucketCount).fill(0);
+        values.forEach((v) => {
+          const idx = Math.min(
+            Math.floor((v - min) / bucketSize),
+            bucketCount - 1
+          );
+          buckets[idx]++;
+        });
+
+        const labels = buckets.map(
+          (_, i) => `${(min + i * bucketSize).toFixed(0)}`
+        );
+
+        if (charts.histogram) charts.histogram.destroy();
+
+        charts.histogram = new Chart(ctx, {
+          type: "bar",
+          data: {
+            labels: labels,
+            datasets: [
+              {
+                label: "Count",
+                data: buckets,
+                backgroundColor: "rgba(120, 86, 255, 0.7)",
+                borderColor: "#7856ff",
+                borderWidth: 1,
+                borderRadius: 2,
+              },
+            ],
+          },
+          options: {
+            ...chartDefaults,
+            plugins: { legend: { display: false } },
+          },
+        });
+      }
+
+      function updateTable() {
+        const tbody = document.getElementById("data-table-body");
+        const sample = allData.slice(0, 100);
+
+        document.getElementById("table-count").textContent = `(showing ${
+          sample.length
+        } of ${formatNumber(allData.length)})`;
+
+        const columns = Object.keys(sample[0] || {}).slice(0, 5);
+
+        tbody.innerHTML = sample
+          .map(
+            (r) => `
+                <tr>
+                    ${columns
+                      .map((col) => `<td>${formatCell(r[col])}</td>`)
+                      .join("")}
+                </tr>
+            `
+          )
+          .join("");
+      }
+
+      function formatCell(value) {
+        if (value === null || value === undefined) return "-";
+        if (typeof value === "number") return value.toLocaleString();
+        if (typeof value === "bigint") return value.toString();
+        return String(value);
+      }
+
+      function clearData() {
+        allData = [];
+        chunks = [];
+        Object.values(charts).forEach((c) => c?.destroy());
+        charts = {};
+
+        document.getElementById("total-records").textContent = "0";
+        document.getElementById("total-value").textContent = "$0";
+        document.getElementById("avg-value").textContent = "$0";
+        document.getElementById("categories").textContent = "0";
+        document.getElementById("load-time").textContent = "0.00s";
+        document.getElementById("table-count").textContent = "(0)";
+        document.getElementById("data-table-body").innerHTML =
+          '<tr><td colspan="5" style="text-align: center; color: #71767b;">Load data to see records</td></tr>';
+
+        ["categoryChart", "valueChart", "histogramChart"].forEach((id) => {
+          const canvas = document.getElementById(id);
+          const parent = canvas.parentNode;
+          const newCanvas = document.createElement("canvas");
+          newCanvas.id = id;
+          parent.replaceChild(newCanvas, canvas);
+        });
+
+        log("Dashboard cleared");
+      }
+
+      // Iniciar
+      connectWebSocket();
+      log("Dashboard ready. Connect to a tenant and load data.");
+    </script>
+  </body>
+</html>
