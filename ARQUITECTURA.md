@@ -83,7 +83,7 @@ class DataConnectorFlightServer(flight.FlightServerBase):
 
 ```yaml
 # config.yaml
-connector_mode: grpc  # o "websocket"
+connector_mode: grpc
 
 connectors:
   tenant_sergio: "localhost:50051"
@@ -108,25 +108,6 @@ connectors:
 3. Gateway obtiene datos del conector via gRPC
 4. Gateway reenvía chunks binarios via WebSocket
 5. Browser parsea Arrow IPC y renderiza charts
-
----
-
-### 4. CLI Clients (Python)
-
-**Rol:** Clientes programáticos para testing, integración, y análisis.
-
-**Ejemplo:** `unified-evaluator`
-
-```python
-import pyarrow.flight as flight
-
-client = flight.connect("grpc://localhost:8815")
-info = client.get_flight_info(flight.FlightDescriptor.for_path("tenant", "dataset"))
-reader = client.do_get(info.endpoints[0].ticket)
-
-for batch in reader:
-    process(batch.data)
-```
 
 ---
 
@@ -209,18 +190,6 @@ connectors:
 
 El Gateway rutea automáticamente las queries al conector correcto basándose en el `tenant_id`.
 
----
-
-## Rendimiento
-
-| Métrica | Valor |
-|---------|-------|
-| Throughput | ~113 MB/s |
-| Latencia (100MB) | ~0.88s |
-| Concurrencia | Soporta 100+ requests simultáneos |
-| Memoria Gateway | Mínima (solo pasa bytes) |
-
----
 
 ## Despliegue
 
