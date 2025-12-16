@@ -29,13 +29,17 @@ func main() {
 		fmt.Sscanf(p, "%d", &flightPort)
 	}
 
-	// Determinar modo de operación
-	mode, _ := config["connector_mode"].(string)
-	if mode == "" {
-		mode = "websocket" // Default para compatibilidad
-	}
+	// Crear ConnectorRegistry para conexiones gRPC a Data Connectors
+	registry := NewConnectorRegistry()
 
-	log.Printf("[Main] Connector mode: %s", mode)
+	// Registrar conectores desde configuración
+	if connectors, ok := config["connectors"].(map[string]string); ok {
+		for tenantID, address := range connectors {
+			if err := registry.RegisterConnector(tenantID, address); err != nil {
+				log.Printf("[Main] Warning: failed to register %s: %v", tenantID, err)
+			}
+		}
+	}
 
 	// Determinar directorio de templates
 	execPath, _ := os.Executable()
@@ -45,75 +49,39 @@ func main() {
 	}
 	staticServer := NewStaticServer(templatesDir)
 
-	// Registrar rutas estáticas
+	// Registrar rutas HTTP
+	browserWS := NewBrowserWSServerGRPC(registry)
+	http.HandleFunc("/ws/browser", browserWS.HandleConnection)
 	http.Handle("/dashboard/", http.StripPrefix("/dashboard/", staticServer))
 	http.Handle("/dashboard", http.RedirectHandler("/dashboard/", http.StatusMovedPermanently))
 
-	if mode == "grpc" {
-		// Modo gRPC: usar ConnectorRegistry
-		registry := NewConnectorRegistry()
+	// Health check endpoint
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+	})
 
-		// Registrar conectores desde configuración
-		if connectors, ok := config["connectors"].(map[string]string); ok {
-			for tenantID, address := range connectors {
-				if err := registry.RegisterConnector(tenantID, address); err != nil {
-					log.Printf("[Main] Warning: failed to register %s: %v", tenantID, err)
-				}
-			}
+	// Iniciar servidor HTTP (Dashboard + WebSocket para browsers)
+	go func() {
+		addr := fmt.Sprintf(":%d", httpPort)
+		log.Printf("[Main] HTTP server starting on %s", addr)
+		if err := http.ListenAndServe(addr, nil); err != nil {
+			log.Fatalf("[Main] HTTP server error: %v", err)
 		}
+	}()
 
-		// Crear servidor WebSocket para browsers (versión gRPC)
-		browserWS := NewBrowserWSServerGRPC(registry)
-		http.HandleFunc("/ws/browser", browserWS.HandleConnection)
+	// Iniciar Flight Server (para CLI clients como unified-evaluator)
+	flightServer := NewFlightServerGRPC(registry, flightPort)
+	go func() {
+		if err := flightServer.Start(); err != nil {
+			log.Fatalf("[Main] Flight server error: %v", err)
+		}
+	}()
 
-		// Iniciar servidor HTTP
-		go func() {
-			addr := fmt.Sprintf(":%d", httpPort)
-			log.Printf("[Main] HTTP server starting on %s", addr)
-			if err := http.ListenAndServe(addr, nil); err != nil {
-				log.Fatalf("[Main] HTTP server error: %v", err)
-			}
-		}()
-
-		// Iniciar Flight Server para clientes gRPC externos (unified-evaluator)
-		flightServerGRPC := NewFlightServerGRPC(registry, flightPort)
-		go func() {
-			if err := flightServerGRPC.Start(); err != nil {
-				log.Fatalf("[Main] Flight server error: %v", err)
-			}
-		}()
-
-		log.Printf("[Main] gRPC mode: connectors communicate via Arrow Flight")
-
-	} else {
-		// Modo WebSocket: usar ConnectionManager (compatibilidad)
-		manager := NewConnectionManager()
-
-		wsServer := NewWebSocketServer(manager, httpPort)
-		browserWS := NewBrowserWSServer(manager)
-
-		http.HandleFunc("/ws/browser", browserWS.HandleConnection)
-
-		// Iniciar servidor WebSocket/HTTP
-		go func() {
-			if err := wsServer.Start(); err != nil {
-				log.Fatalf("[Main] HTTP server error: %v", err)
-			}
-		}()
-
-		// Iniciar Flight server (para clientes externos)
-		flightServer := NewFlightServer(manager, flightPort)
-		go func() {
-			if err := flightServer.Start(); err != nil {
-				log.Fatalf("[Main] Flight server error: %v", err)
-			}
-		}()
-
-		log.Printf("[Main] WebSocket mode: connectors communicate via WebSocket")
-	}
-
-	log.Printf("[Main] Gateway started - HTTP: %d, Mode: %s", httpPort, mode)
-	log.Printf("[Main] Dashboard available at: http://localhost:%d/dashboard/", httpPort)
+	log.Printf("[Main] Gateway started")
+	log.Printf("[Main]   HTTP/WebSocket: :%d", httpPort)
+	log.Printf("[Main]   Arrow Flight:   :%d", flightPort)
+	log.Printf("[Main]   Dashboard:      http://localhost:%d/dashboard/", httpPort)
 
 	// Esperar señal de terminación
 	sigChan := make(chan os.Signal, 1)
@@ -129,7 +97,7 @@ func loadConfig() map[string]interface{} {
 
 	file, err := os.Open("config.yaml")
 	if err != nil {
-		log.Printf("[Config] No config.yaml found, using defaults (websocket mode)")
+		log.Printf("[Config] No config.yaml found, using defaults")
 		return config
 	}
 	defer file.Close()

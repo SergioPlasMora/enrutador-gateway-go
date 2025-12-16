@@ -10,6 +10,23 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// BrowserRequest representa una solicitud del navegador
+type BrowserRequest struct {
+	Action   string `json:"action"`
+	TenantID string `json:"tenant"`
+	Dataset  string `json:"dataset"`
+	Rows     int    `json:"rows,omitempty"`
+}
+
+// BrowserResponse representa una respuesta al navegador
+type BrowserResponse struct {
+	Status     string `json:"status"`
+	Message    string `json:"message,omitempty"`
+	Error      string `json:"error,omitempty"`
+	TotalBytes int64  `json:"total_bytes,omitempty"`
+	Chunks     int    `json:"chunks,omitempty"`
+}
+
 // BrowserWSServerGRPC maneja conexiones WebSocket desde navegadores usando gRPC para conectores
 type BrowserWSServerGRPC struct {
 	registry *ConnectorRegistry

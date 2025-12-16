@@ -1,20 +1,18 @@
 # Configuración del Gateway
+# Comunicación con conectores: gRPC/Arrow Flight
 
-# Modo de comunicación con conectores: "websocket" o "grpc"
-connector_mode: grpc
-
-# Puerto del servidor HTTP (WebSocket para browsers)
+# Puerto HTTP (WebSocket para browsers + Dashboard)
 http_port: 8080
 
-# Puerto del servidor Arrow Flight (para clientes gRPC directos)
+# Puerto Arrow Flight (para CLI clients)
 flight_port: 8815
 
-# Conectores registrados (solo para modo grpc)
+# Conectores registrados (gRPC)
 # El gateway se conectará a estos conectores al iniciar
 connectors:
   tenant_sergio: "localhost:50051"
-  # tenant_empresa_a: "conector-a.internal:50051"
-  # tenant_empresa_b: "conector-b.internal:50051"
+  # tenant_empresa_a: "192.168.1.10:50051"
+  # tenant_empresa_b: "10.0.0.5:50051"
 
 # Timeouts
 timeouts:
