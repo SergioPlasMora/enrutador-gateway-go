@@ -2,10 +2,82 @@
 
 ## Resumen Ejecutivo
 
-Integrar el servicio de **Tableros** (visualización de datos tipo Power BI) con luzzi-core-im, donde:
+Integrar el servicio de **Tableros** (visualización de datos) con luzzi-core-im, donde:
 - **luzzi-core-im** maneja toda la autenticación/autorización
 - **enrutador-gateway-go** solo valida un ticket temporal y rutea datos
 - Los datos regresan **directo al navegador** sin pasar por luzzi-core-im
+
+---
+
+## Patrón Arquitectónico: Control Plane / Data Plane
+
+### ¿Qué es este patrón?
+
+El patrón **Control Plane / Data Plane** es una arquitectura que separa las responsabilidades de **toma de decisiones** (control) del **movimiento de datos** (data). Es ampliamente utilizado en sistemas como Kubernetes, Istio, Envoy, y ahora en nuestra plataforma.
+
+| Plano | Rol | Características |
+|-------|-----|-----------------|
+| **Control Plane** | "El cerebro" | Toma decisiones, define políticas, gestiona configuración, autentica usuarios |
+| **Data Plane** | "Los músculos" | Ejecuta las decisiones, mueve datos, rutea tráfico, no toma decisiones de negocio |
+
+### Aplicación en nuestra arquitectura
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    PATRÓN CONTROL PLANE / DATA PLANE                            │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│   ┌─────────────────────────────────────┐                                       │
+│   │         CONTROL PLANE               │                                       │
+│   │        (luzzi-core-im)              │                                       │
+│   │           FastAPI                   │                                       │
+│   │                                     │                                       │
+│   │  Responsabilidades:                 │                                       │
+│   │  ✅ Autenticación (JWT)              │                                       │
+│   │  ✅ Autorización (permisos, roles)   │                                       │
+│   │  ✅ Gestión de sesiones              │                                       │
+│   │  ✅ Políticas (qué tenant puede ver) │                                       │
+│   │  ✅ Configuración del sistema        │                                       │
+│   │  ✅ Emite tickets firmados (HMAC)    │                                       │
+│   └──────────────────┬──────────────────┘                                       │
+│                      │                                                          │
+│                      │ Ticket firmado = "autorización pre-validada"             │
+│                      ▼                                                          │
+│   ┌─────────────────────────────────────┐     ┌──────────────────────┐          │
+│   │          DATA PLANE                 │     │                      │          │
+│   │     (enrutador-gateway-go)          │◀───▶│   Data Connectors    │          │
+│   │            Go + gRPC                │     │     (Python)         │          │
+│   │                                     │     │                      │          │
+│   │  Responsabilidades:                 │     └──────────────────────┘          │
+│   │  ✅ Ruteo de tráfico (multi-tenant)  │                                       │
+│   │  ✅ WebSocket → gRPC translation     │                                       │
+│   │  ✅ Streaming Arrow IPC              │                                       │
+│   │  ✅ Valida tickets (sin consultar)   │                                       │
+│   │  ❌ NO toma decisiones de negocio    │                                       │
+│   │  ❌ NO gestiona usuarios             │                                       │
+│   └─────────────────────────────────────┘                                       │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Beneficios de esta separación
+
+| Beneficio | Descripción |
+|-----------|-------------|
+| **Escalado independiente** | Gateway escala con el tráfico de datos; luzzi escala con usuarios/sesiones |
+| **Resiliencia** | Si luzzi falla, el gateway sigue sirviendo streams con tickets ya emitidos |
+| **Sin cuello de botella** | Los datos NO pasan por el Control Plane durante el streaming |
+| **Simplicidad** | Cada componente tiene una responsabilidad clara |
+| **Stateless Data Plane** | El gateway no mantiene estado de usuarios, solo valida firma HMAC |
+
+### Comparación con sistemas de la industria
+
+| Sistema | Control Plane | Data Plane |
+|---------|---------------|------------|
+| **Kubernetes** | API Server, etcd, Scheduler | Kubelet, Container Runtime |
+| **Istio** | istiod (Pilot, Citadel) | Envoy proxies |
+| **Kong Gateway** | Kong Manager | Kong Gateway proxies |
+| **Nuestra Plataforma** | luzzi-core-im | enrutador-gateway-go |
 
 ---
 
@@ -58,6 +130,243 @@ Integrar el servicio de **Tableros** (visualización de datos tipo Power BI) con
 │                                                                                          │
 └─────────────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## Flujo Detallado Paso a Paso
+
+### FASE 1: Obtención del Ticket (Control Plane)
+
+#### Paso 1: Usuario solicita acceso al dashboard
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  Usuario quiere ver un dashboard                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                               │
+│   👤 Usuario en el Browser                                                    │
+│      │                                                                        │
+│      │  Hace clic en "Ver Dashboard de Ventas"                               │
+│      │  El frontend tiene guardado el JWT de sesión                          │
+│      ▼                                                                        │
+│   ┌─────────────────────────────────────────────┐                            │
+│   │  POST /api/v2/tableros/stream-ticket        │                            │
+│   │  Headers:                                    │                            │
+│   │    Authorization: Bearer eyJhbGci...        │                            │
+│   │  Body:                                       │                            │
+│   │    { "dataset": "ventas" }                   │                            │
+│   └─────────────────────────────────────────────┘                            │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Paso 2: luzzi-core-im valida TODO
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  Control Plane realiza todas las validaciones                                 │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                               │
+│   📍 luzzi-core-im (FastAPI) - CONTROL PLANE                                 │
+│      │                                                                        │
+│      ├─ ✅ Verifica JWT válido y no expirado                                  │
+│      ├─ ✅ Verifica JWT no está en blacklist (Redis)                          │
+│      ├─ ✅ Extrae user_id del JWT                                             │
+│      ├─ ✅ Verifica que el usuario tiene sesión activa                        │
+│      ├─ ✅ Obtiene active_account_id (cuenta/workspace activo)               │
+│      ├─ ✅ Verifica que el usuario pertenece a esa cuenta (UsuarioCuentaRol)  │
+│      ├─ ✅ Verifica que el usuario tiene permiso para "tableros"              │
+│      │                                                                        │
+│      │  Si CUALQUIERA falla → 401 Unauthorized                               │
+│      │                                                                        │
+│      ▼  Si TODO OK → Genera el ticket (Paso 3)                               │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Paso 3: Generación del Ticket HMAC
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  luzzi-core-im genera el Ticket firmado                                       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                               │
+│   📍 luzzi-core-im crea el ticket:                                           │
+│      │                                                                        │
+│      │  1. Construye el payload:                                             │
+│      │     {                                                                  │
+│      │       "user_id": "550e8400-e29b-41d4-a716...",                        │
+│      │       "cuenta_id": "660e8400-e29b-41d4-a716...",                      │
+│      │       "datasets": ["ventas"],                                          │
+│      │       "exp": 1702656630,  ← Unix timestamp (ahora + 30 segundos)      │
+│      │       "iat": 1702656600   ← Unix timestamp (ahora)                    │
+│      │     }                                                                  │
+│      │                                                                        │
+│      │  2. Codifica en base64:                                               │
+│      │     payload_b64 = "eyJ1c2VyX2lkIjoiNTUw..."                           │
+│      │                                                                        │
+│      │  3. Firma con HMAC-SHA256 usando TABLEROS_SECRET_KEY:                 │
+│      │     signature = HMAC(payload_b64, secret_key)                         │
+│      │     signature_b64 = "dGhpcyBpcyBhIHNpZ25hdHVyZQ..."                   │
+│      │                                                                        │
+│      │  4. Combina:                                                           │
+│      │     ticket = "eyJ1c2VyX2lkIjoiNTUw....dGhpcyBpcyBhIHNpZ25hdHVyZQ"     │
+│      │              └─────payload─────┘ └──────────signature───────────┘     │
+│      ▼                                                                        │
+│   Respuesta al Browser:                                                       │
+│   {                                                                           │
+│     "ticket": "eyJ1c2VyX...signature",                                       │
+│     "gateway_url": "wss://gateway.ejemplo.com/stream",                       │
+│     "expires_in": 30                                                          │
+│   }                                                                           │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### FASE 2: Conexión Directa al Gateway (Data Plane)
+
+#### Paso 4: Browser conecta DIRECTO al Gateway
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  Conexión directa sin pasar por luzzi-core-im                                │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                               │
+│   👤 Browser                                                                  │
+│      │                                                                        │
+│      │  JavaScript:                                                           │
+│      │  const ws = new WebSocket(                                            │
+│      │    "wss://gateway.ejemplo.com/stream?ticket=eyJ1c2VyX..."             │
+│      │  );                                                                    │
+│      │                                                                        │
+│      ▼  Conexión WebSocket directa al Gateway                                │
+│   ┌─────────────────────────────────────────────┐                            │
+│   │         enrutador-gateway-go                 │                            │
+│   │              DATA PLANE                      │                            │
+│   └─────────────────────────────────────────────┘                            │
+│                                                                               │
+│   ⚠️ NOTA: Esta conexión NO pasa por luzzi-core-im                           │
+│      El browser habla DIRECTAMENTE con el Gateway                            │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Paso 5: Gateway valida el Ticket (sin consultar a luzzi)
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  Validación auto-contenida usando HMAC                                       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                               │
+│   📍 enrutador-gateway-go                                                    │
+│      │                                                                        │
+│      │  1. Extrae ticket del query param                                     │
+│      │     ticketStr = "eyJ1c2VyX...signature"                               │
+│      │                                                                        │
+│      │  2. Separa payload y signature                                        │
+│      │     parts = split(ticketStr, ".")                                     │
+│      │     payload_b64 = parts[0]                                            │
+│      │     signature_received = parts[1]                                     │
+│      │                                                                        │
+│      │  3. Recalcula la firma con SU copia del secret:                       │
+│      │     signature_expected = HMAC(payload_b64, TABLEROS_SECRET_KEY)       │
+│      │                                                                        │
+│      │  4. Compara firmas:                                                   │
+│      │     if signature_received != signature_expected:                      │
+│      │         → 401 "invalid ticket signature"  ❌                          │
+│      │                                                                        │
+│      │  5. Decodifica el payload                                             │
+│      │     payload = base64_decode(payload_b64)                              │
+│      │     { "user_id": "...", "cuenta_id": "...", "exp": ... }              │
+│      │                                                                        │
+│      │  6. Verifica expiración:                                              │
+│      │     if now() > exp:                                                   │
+│      │         → 401 "ticket expired"  ❌                                    │
+│      │                                                                        │
+│      ▼  Si todo OK → Ticket válido ✅                                        │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### FASE 3: Streaming de Datos
+
+#### Paso 6: Gateway conecta al Data Connector correcto
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  Ruteo multi-tenant basado en cuenta_id del ticket                           │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                               │
+│   📍 enrutador-gateway-go                                                    │
+│      │                                                                        │
+│      │  Ticket dice: cuenta_id = "660e8400..."                               │
+│      │                                                                        │
+│      │  Busca en config.yaml:                                                │
+│      │  connectors:                                                          │
+│      │    "660e8400...": "192.168.1.10:50051"  ← ¡Este!                      │
+│      │                                                                        │
+│      │  Conexión gRPC Arrow Flight:                                          │
+│      ▼                                                                        │
+│   ┌─────────────────────────────────────────────┐                            │
+│   │           data-conector (Python)             │                            │
+│   │           192.168.1.10:50051                 │                            │
+│   │                                              │                            │
+│   │  1. GetFlightInfo(descriptor="ventas")       │                            │
+│   │     → Carga el dataset, retorna schema       │                            │
+│   │                                              │                            │
+│   │  2. DoGet(ticket)                            │                            │
+│   │     → Stream de RecordBatches en Arrow IPC   │                            │
+│   └─────────────────────────────────────────────┘                            │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Paso 7: Datos fluyen DIRECTO al Browser
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  Stream sin pasar por el Control Plane                                       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                               │
+│   data-conector                                                               │
+│      │                                                                        │
+│      │  RecordBatch 1 (Arrow IPC binario)                                    │
+│      │  RecordBatch 2                                                         │
+│      │  RecordBatch 3...                                                     │
+│      ▼                                                                        │
+│   enrutador-gateway-go                                                       │
+│      │                                                                        │
+│      │  Recibe gRPC stream → Reenvía por WebSocket                           │
+│      │  (NO modifica datos, solo los pasa)                                   │
+│      │                                                                        │
+│      │  ⚠️ NOTA: Aquí NO se consulta a luzzi-core-im                         │
+│      │     Los datos van DIRECTO al browser                                  │
+│      ▼                                                                        │
+│   👤 Browser                                                                  │
+│      │                                                                        │
+│      │  ws.onmessage = (event) => {                                          │
+│      │    const table = tableFromIPC(event.data);  // Apache Arrow JS        │
+│      │    renderChart(table);  // Chart.js                                   │
+│      │  }                                                                     │
+│      │                                                                        │
+│      ▼  🎉 ¡Usuario ve su dashboard en tiempo real!                          │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Resumen: ¿Qué componente participa en cada paso?
+
+| Paso | Acción | luzzi-core-im | Gateway | Data Connector |
+|------|--------|:-------------:|:-------:|:--------------:|
+| 1 | Usuario solicita ticket | ✅ | ❌ | ❌ |
+| 2 | Validación JWT, permisos | ✅ | ❌ | ❌ |
+| 3 | Generación ticket HMAC | ✅ | ❌ | ❌ |
+| 4 | Browser conecta a Gateway | ❌ | ✅ | ❌ |
+| 5 | Validación del ticket | ❌ | ✅ | ❌ |
+| 6 | Conexión a Data Connector | ❌ | ✅ | ✅ |
+| 7 | Streaming de datos | ❌ | ✅ | ✅ |
+
+> [!TIP]
+> **El Control Plane (luzzi-core-im) solo participa en los pasos 1-3.** Los datos (potencialmente millones de filas) fluyen directamente por el Data Plane, eliminando el cuello de botella.
 
 ---
 
