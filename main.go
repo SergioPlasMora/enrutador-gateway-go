@@ -19,7 +19,7 @@ func main() {
 	config := loadConfig()
 
 	// Configurar puertos
-	httpPort := 8080
+	httpPort := 8081
 	flightPort := 8815
 
 	if p := os.Getenv("HTTP_PORT"); p != "" {
@@ -49,16 +49,46 @@ func main() {
 	}
 	staticServer := NewStaticServer(templatesDir)
 
+	// === CDP Edge Architecture Components ===
+
+	// Control Plane client for session validation
+	controlPlane := NewControlPlaneClient()
+	log.Printf("[Main] Control Plane URL: %s", controlPlane.baseURL)
+
+	// Session manager for tracking active sessions
+	sessionManager := NewSessionManager(controlPlane)
+
+	// Redis subscriber for real-time revocation events
+	redisSubscriber := NewRedisSubscriber(sessionManager)
+	if err := redisSubscriber.Start(); err != nil {
+		log.Printf("[Main] Warning: Redis subscriber not started (revocation events delayed): %v", err)
+	}
+
+	// StreamServerV2 with Control Plane validation
+	streamServerV2 := NewStreamServerV2(registry, sessionManager)
+
+	// === End CDP Edge Components ===
+
 	// Registrar rutas HTTP
 	browserWS := NewBrowserWSServerGRPC(registry)
 	http.HandleFunc("/ws/browser", browserWS.HandleConnection)
 	http.Handle("/dashboard/", http.StripPrefix("/dashboard/", staticServer))
 	http.Handle("/dashboard", http.RedirectHandler("/dashboard/", http.StatusMovedPermanently))
 
+	// CDP Edge endpoint with Control Plane validation
+	// URL format: /stream/{session_id}
+	http.HandleFunc("/stream/", streamServerV2.HandleStream)
+	log.Printf("[Main] CDP Edge /stream/{session_id} endpoint enabled")
+
 	// Health check endpoint
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		activeSessions, activeUsers := sessionManager.Stats()
+		redisConnected := redisSubscriber.IsConnected()
+
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
+		fmt.Fprintf(w, `{"status":"ok","sessions":%d,"users":%d,"redis":%t}`,
+			activeSessions, activeUsers, redisConnected)
 	})
 
 	// Iniciar servidor HTTP (Dashboard + WebSocket para browsers)
@@ -82,6 +112,7 @@ func main() {
 	log.Printf("[Main]   HTTP/WebSocket: :%d", httpPort)
 	log.Printf("[Main]   Arrow Flight:   :%d", flightPort)
 	log.Printf("[Main]   Dashboard:      http://localhost:%d/dashboard/", httpPort)
+	log.Printf("[Main]   Stream (CDP):   ws://localhost:%d/stream/{session_id}", httpPort)
 
 	// Esperar señal de terminación
 	sigChan := make(chan os.Signal, 1)
@@ -89,6 +120,10 @@ func main() {
 	<-sigChan
 
 	log.Println("[Main] Shutting down...")
+
+	// Graceful shutdown
+	redisSubscriber.Stop()
+	sessionManager.Stop()
 }
 
 // loadConfig carga configuración desde config.yaml

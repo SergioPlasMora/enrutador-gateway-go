@@ -3,33 +3,41 @@ FROM golang:1.21-alpine AS builder
 
 WORKDIR /app
 
-# Instalar dependencias de compilación
-RUN apk add --no-cache gcc musl-dev
+# Install build dependencies
+RUN apk add --no-cache git
 
-# Copiar go.mod primero para cache de dependencias
-COPY go.mod go.sum* ./
+# Copy go mod files
+COPY go.mod go.sum ./
 RUN go mod download
 
-# Copiar código fuente
+# Copy source code
 COPY *.go ./
+COPY templates/ ./templates/
 
-# Compilar binario estático
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o gateway .
+# Build the binary
+RUN CGO_ENABLED=0 GOOS=linux go build -o gateway .
 
-# Runtime stage - imagen mínima
+# Runtime stage
 FROM alpine:3.19
 
 WORKDIR /app
 
-# Copiar solo el binario
+# Install runtime dependencies
+RUN apk add --no-cache ca-certificates wget
+
+# Copy binary from builder
 COPY --from=builder /app/gateway .
+COPY --from=builder /app/templates ./templates/
 
-# Copiar templates para el dashboard
-COPY templates/ ./templates/
+# Copy config if exists
+COPY config.yaml ./
 
-# Exponer puertos
-EXPOSE 8080 8815
+# Expose ports
+EXPOSE 8081 8815
 
-# Ejecutar
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD wget -q --spider http://localhost:8081/health || exit 1
+
+# Run the gateway
 CMD ["./gateway"]
-

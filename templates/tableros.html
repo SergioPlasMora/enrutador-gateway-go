@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tableros - Test de Tickets HMAC</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script type="module">
+      import { tableFromIPC } from "https://cdn.jsdelivr.net/npm/apache-arrow@14.0.2/+esm";
+      window.Arrow = { tableFromIPC };
+    </script>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family: system-ui, -apple-system, sans-serif;
+        background: linear-gradient(135deg, #0f1419 0%, #1a1f2e 100%);
+        color: #e7e9ea;
+        min-height: 100vh;
+        padding: 1.5rem;
+      }
+
+      .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1.5rem;
+        padding-bottom: 1rem;
+        border-bottom: 1px solid #2f3336;
+      }
+      .header h1 {
+        font-size: 1.5rem;
+        background: linear-gradient(90deg, #f7931a, #ff6b35);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+      }
+      .header .subtitle {
+        font-size: 0.85rem;
+        color: #71767b;
+        margin-top: 0.25rem;
+      }
+
+      .step-container {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1.5rem;
+        margin-bottom: 1.5rem;
+      }
+      @media (max-width: 900px) {
+        .step-container {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      .card {
+        background: #16202a;
+        border: 1px solid #2f3336;
+        border-radius: 12px;
+        padding: 1.25rem;
+      }
+      .card h2 {
+        font-size: 1rem;
+        margin-bottom: 1rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+      .card h2 .step-num {
+        background: linear-gradient(90deg, #f7931a, #ff6b35);
+        color: #000;
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
+        font-weight: bold;
+      }
+
+      input,
+      select,
+      textarea {
+        width: 100%;
+        background: #202e3a;
+        border: 1px solid #2f3336;
+        border-radius: 8px;
+        padding: 0.75rem;
+        color: #e7e9ea;
+        font-size: 14px;
+        margin-bottom: 0.75rem;
+      }
+      input:focus,
+      select:focus,
+      textarea:focus {
+        outline: none;
+        border-color: #f7931a;
+      }
+      textarea {
+        font-family: monospace;
+        font-size: 12px;
+        resize: vertical;
+        min-height: 80px;
+      }
+
+      label {
+        display: block;
+        font-size: 12px;
+        color: #71767b;
+        margin-bottom: 0.25rem;
+      }
+
+      button {
+        background: linear-gradient(90deg, #f7931a, #ff6b35);
+        color: #000;
+        border: none;
+        padding: 0.75rem 1.5rem;
+        border-radius: 8px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s;
+        font-size: 14px;
+        width: 100%;
+      }
+      button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(247, 147, 26, 0.4);
+      }
+      button:disabled {
+        background: #38444d;
+        cursor: not-allowed;
+        transform: none;
+        box-shadow: none;
+      }
+      button.secondary {
+        background: #202e3a;
+        color: #e7e9ea;
+        border: 1px solid #2f3336;
+      }
+
+      .connection-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.5rem 1rem;
+        background: #16202a;
+        border-radius: 20px;
+        font-size: 12px;
+      }
+      .connection-status .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #71767b;
+      }
+      .connection-status.connected .dot {
+        background: #00ba7c;
+      }
+      .connection-status.authenticated .dot {
+        background: #f7931a;
+        animation: pulse 1.5s infinite;
+      }
+      .connection-status.error .dot {
+        background: #f44;
+      }
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.5;
+        }
+      }
+
+      .response-box {
+        background: #0f1419;
+        border: 1px solid #2f3336;
+        border-radius: 8px;
+        padding: 1rem;
+        font-family: monospace;
+        font-size: 12px;
+        white-space: pre-wrap;
+        word-break: break-all;
+        max-height: 200px;
+        overflow-y: auto;
+      }
+      .response-box.success {
+        border-color: #00ba7c;
+      }
+      .response-box.error {
+        border-color: #f44;
+        color: #f44;
+      }
+
+      .ticket-display {
+        background: #0f1419;
+        border: 1px solid #f7931a;
+        border-radius: 8px;
+        padding: 1rem;
+        margin-top: 0.75rem;
+      }
+      .ticket-display .label {
+        font-size: 11px;
+        color: #f7931a;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      .ticket-display .value {
+        font-family: monospace;
+        font-size: 11px;
+        word-break: break-all;
+        margin-top: 0.25rem;
+        color: #71767b;
+      }
+      .ticket-display .expires {
+        color: #ff6b35;
+        margin-top: 0.5rem;
+        font-size: 12px;
+      }
+
+      .stats-bar {
+        display: flex;
+        gap: 1rem;
+        margin-bottom: 1.5rem;
+        flex-wrap: wrap;
+      }
+      .stat-item {
+        background: #16202a;
+        border: 1px solid #2f3336;
+        border-radius: 10px;
+        padding: 1rem 1.5rem;
+        flex: 1;
+        min-width: 120px;
+      }
+      .stat-item .label {
+        font-size: 11px;
+        color: #71767b;
+        text-transform: uppercase;
+      }
+      .stat-item .value {
+        font-size: 1.25rem;
+        font-weight: bold;
+        margin-top: 0.25rem;
+      }
+      .stat-item .value.orange {
+        color: #f7931a;
+      }
+      .stat-item .value.green {
+        color: #00ba7c;
+      }
+      .stat-item .value.blue {
+        color: #1d9bf0;
+      }
+
+      .chart-container {
+        height: 300px;
+        margin-top: 1rem;
+      }
+
+      .full-width {
+        grid-column: span 2;
+      }
+      @media (max-width: 900px) {
+        .full-width {
+          grid-column: span 1;
+        }
+      }
+
+      #log {
+        background: #0f1419;
+        border: 1px solid #2f3336;
+        border-radius: 8px;
+        padding: 1rem;
+        font-family: monospace;
+        font-size: 11px;
+        max-height: 300px;
+        overflow-y: auto;
+        margin-top: 1rem;
+      }
+      .log-entry {
+        margin: 0.25rem 0;
+      }
+      .log-time {
+        color: #71767b;
+      }
+      .log-info {
+        color: #1d9bf0;
+      }
+      .log-success {
+        color: #00ba7c;
+      }
+      .log-error {
+        color: #f44;
+      }
+      .log-ticket {
+        color: #f7931a;
+      }
+
+      .progress-bar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        height: 3px;
+        background: linear-gradient(90deg, #f7931a, #ff6b35);
+        width: 0%;
+        transition: width 0.3s;
+        z-index: 1000;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="progress-bar" id="progress-bar"></div>
+
+    <div class="header">
+      <div>
+        <h1>🎫 Tableros - Test HMAC</h1>
+        <div class="subtitle">
+          Control Plane / Data Plane - Ticket Authentication
+        </div>
+      </div>
+      <div class="connection-status" id="ws-status">
+        <span class="dot"></span>
+        <span id="ws-status-text">Disconnected</span>
+      </div>
+    </div>
+
+    <div class="step-container">
+      <!-- Step 1: Get Ticket -->
+      <div class="card">
+        <h2><span class="step-num">1</span> Obtener Ticket (Control Plane)</h2>
+
+        <label>API Base URL</label>
+        <input
+          id="api-url"
+          value="http://localhost:8000"
+          placeholder="http://localhost:8000"
+        />
+
+        <label>JWT Token (de login)</label>
+        <textarea
+          id="jwt-token"
+          placeholder="Pega aquí tu JWT token de autenticación..."
+        ></textarea>
+
+        <label>Tenant/Cuenta ID (del workspace activo)</label>
+        <input
+          id="tenant-id"
+          value="511baf05-5839-4f58-a74e-661262facba8"
+          placeholder="UUID del workspace activo"
+        />
+
+        <label>Dataset</label>
+        <select id="dataset">
+          <option value="ventas">ventas</option>
+          <option value="dataset_1mb">dataset_1mb</option>
+          <option value="dataset_10mb" selected>dataset_10mb</option>
+          <option value="dataset_50mb">dataset_50mb</option>
+        </select>
+
+        <button onclick="getTicket()" id="ticket-btn">
+          🎫 Solicitar Ticket
+        </button>
+
+        <div class="ticket-display" id="ticket-display" style="display: none">
+          <div class="label">Ticket HMAC</div>
+          <div class="value" id="ticket-value"></div>
+          <div class="expires" id="ticket-expires"></div>
+        </div>
+      </div>
+
+      <!-- Step 2: Connect to Gateway -->
+      <div class="card">
+        <h2>
+          <span class="step-num">2</span> Conectar al Gateway (Data Plane)
+        </h2>
+
+        <label>Gateway URL</label>
+        <input id="gateway-url" value="ws://localhost:8081/stream" placeholder="ws://localhost:8081/stream" />
+
+        <label>Ticket (automático)</label>
+        <input
+          id="ticket-input"
+          placeholder="Se llenará automáticamente..."
+          readonly
+        />
+
+        <button onclick="connectGateway()" id="connect-btn" disabled>
+          🔌 Conectar con Ticket
+        </button>
+
+        <div
+          class="response-box"
+          id="gateway-response"
+          style="margin-top: 1rem; display: none"
+        ></div>
+      </div>
+
+      <!-- Step 3: Query Data -->
+      <div class="card">
+        <h2><span class="step-num">3</span> Solicitar Datos</h2>
+
+        <label>Dataset a consultar</label>
+        <input
+          id="query-dataset"
+          value="dataset_10mb"
+          placeholder="dataset_10mb"
+        />
+
+        <button onclick="queryData()" id="query-btn" disabled>
+          📊 Query Data
+        </button>
+      </div>
+
+      <!-- Stats -->
+      <div class="card">
+        <h2>📈 Estadísticas</h2>
+        <div class="stats-bar" style="flex-direction: column; gap: 0.5rem">
+          <div class="stat-item">
+            <div class="label">Records</div>
+            <div class="value blue" id="total-records">0</div>
+          </div>
+          <div class="stat-item">
+            <div class="label">Bytes Transferidos</div>
+            <div class="value orange" id="total-bytes">0 KB</div>
+          </div>
+          <div class="stat-item">
+            <div class="label">Tiempo</div>
+            <div class="value green" id="total-time">0.00s</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Log -->
+      <div class="card full-width">
+        <h2>📜 Log de Eventos</h2>
+        <div id="log"></div>
+      </div>
+
+      <!-- Chart -->
+      <div class="card full-width">
+        <h2>📊 Datos Recibidos</h2>
+        <div class="chart-container">
+          <canvas id="dataChart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // State
+      let currentTicket = null;
+      let gatewayWs = null;
+      let chunks = [];
+      let startTime = 0;
+      let chart = null;
+
+      // Logging
+      function log(msg, type = "info") {
+        const el = document.getElementById("log");
+        const time = new Date().toISOString().slice(11, 19);
+        el.innerHTML =
+          `<div class="log-entry"><span class="log-time">[${time}]</span> <span class="log-${type}">${msg}</span></div>` +
+          el.innerHTML;
+        if (el.children.length > 100) el.lastChild.remove();
+      }
+
+      function updateStatus(status, text) {
+        const el = document.getElementById("ws-status");
+        const textEl = document.getElementById("ws-status-text");
+        el.className = "connection-status " + status;
+        textEl.textContent = text;
+      }
+
+      async function getTicket() {
+        const apiUrl = document.getElementById("api-url").value;
+        const jwt = document.getElementById("jwt-token").value.trim();
+        const dataset = document.getElementById("dataset").value;
+        const tenantId = document.getElementById("tenant-id").value.trim();
+
+        if (!jwt) {
+          log("❌ JWT token es requerido", "error");
+          alert("Por favor ingresa tu JWT token");
+          return;
+        }
+
+        log(`🎫 Solicitando ticket para dataset: ${dataset}`, "ticket");
+        document.getElementById("ticket-btn").disabled = true;
+
+        try {
+          const response = await fetch(
+            `${apiUrl}/api/v2/tableros/stream-ticket`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${jwt}`,
+              },
+              body: JSON.stringify({ 
+                dataset: dataset,
+                tenant_id: tenantId || null 
+              }),
+            }
+          );
+
+        const data = await response.json();
+
+          if (!response.ok) {
+            throw new Error(data.detail || JSON.stringify(data) || `HTTP ${response.status}`);
+          }
+
+          currentTicket = data;
+
+          // Show ticket info
+          document.getElementById("ticket-display").style.display = "block";
+          document.getElementById("ticket-value").textContent =
+            data.ticket.substring(0, 50) + "...";
+          document.getElementById(
+            "ticket-expires"
+          ).textContent = `⏱️ Expira en ${data.expires_in} segundos`;
+          document.getElementById("ticket-input").value = data.ticket;
+          document.getElementById("gateway-url").value = data.gateway_url;
+          document.getElementById("query-dataset").value = dataset;
+
+          // Enable connect button
+          document.getElementById("connect-btn").disabled = false;
+
+          log(`✅ Ticket obtenido (expira en ${data.expires_in}s)`, "success");
+          log(`   Gateway: ${data.gateway_url}`, "info");
+
+          // Auto-countdown
+          let remaining = data.expires_in;
+          const interval = setInterval(() => {
+            remaining--;
+            document.getElementById(
+              "ticket-expires"
+            ).textContent = `⏱️ Expira en ${remaining} segundos`;
+            if (remaining <= 0) {
+              clearInterval(interval);
+              document.getElementById("ticket-expires").textContent =
+                "❌ EXPIRADO";
+              document.getElementById("connect-btn").disabled = true;
+              currentTicket = null;
+            }
+          }, 1000);
+        } catch (error) {
+          // Check for CORS or network errors
+          if (error.name === 'TypeError' && error.message.includes('fetch')) {
+            log(`❌ CORS/Network Error: ${error.message}`, "error");
+            log(`💡 Tip: Verifica que luzzi-core-im esté corriendo en ${apiUrl}`, "error");
+          } else {
+            log(`❌ Error: ${error.message}`, "error");
+          }
+          alert(`Error: ${error.message}\n\n¿Está corriendo luzzi-core-im en ${apiUrl}?`);
+        } finally {
+          document.getElementById("ticket-btn").disabled = false;
+        }
+      }
+
+      // Step 2: Connect to Gateway with Ticket
+      function connectGateway() {
+        const gatewayUrl = document.getElementById("gateway-url").value;
+        const ticket = document.getElementById("ticket-input").value;
+
+        if (!ticket) {
+          log("❌ No hay ticket disponible", "error");
+          return;
+        }
+
+        log(`🔌 Conectando al Gateway...`, "info");
+        document.getElementById("connect-btn").disabled = true;
+
+        const wsUrl = `${gatewayUrl}?ticket=${encodeURIComponent(ticket)}`;
+        gatewayWs = new WebSocket(wsUrl);
+        gatewayWs.binaryType = "arraybuffer";
+
+        gatewayWs.onopen = () => {
+          updateStatus("connected", "Connected");
+          log("✅ WebSocket conectado al Gateway", "success");
+        };
+
+        gatewayWs.onmessage = handleGatewayMessage;
+
+        gatewayWs.onclose = (e) => {
+          updateStatus("disconnected", "Disconnected");
+          log(`🔌 Desconectado: ${e.code} ${e.reason}`, "info");
+          document.getElementById("query-btn").disabled = true;
+        };
+
+        gatewayWs.onerror = (e) => {
+          updateStatus("error", "Error");
+          log("❌ Error de WebSocket", "error");
+          document.getElementById("gateway-response").style.display = "block";
+          document.getElementById("gateway-response").className =
+            "response-box error";
+          document.getElementById("gateway-response").textContent =
+            "Connection failed - check ticket validity";
+        };
+      }
+
+      // Handle messages from Gateway
+      async function handleGatewayMessage(event) {
+        if (event.data instanceof ArrayBuffer) {
+          // Binary Arrow IPC chunk
+          chunks.push(new Uint8Array(event.data));
+          const totalBytes = chunks.reduce((sum, c) => sum + c.length, 0);
+          document.getElementById("total-bytes").textContent =
+            formatBytes(totalBytes);
+          document.getElementById("progress-bar").style.width =
+            Math.min((totalBytes / 1000000) * 5, 100) + "%";
+          log(`📦 Chunk: ${formatBytes(totalBytes)} total`, "info");
+        } else {
+          // JSON control message
+          const msg = JSON.parse(event.data);
+          log(`📨 Gateway: ${JSON.stringify(msg)}`, "info");
+
+          const respEl = document.getElementById("gateway-response");
+          respEl.style.display = "block";
+          respEl.textContent = JSON.stringify(msg, null, 2);
+
+          if (msg.status === "authenticated") {
+            updateStatus("authenticated", "Authenticated");
+            log(
+              `🔓 Autenticado: user=${msg.user_id}, cuenta=${msg.cuenta_id}`,
+              "success"
+            );
+            respEl.className = "response-box success";
+            document.getElementById("query-btn").disabled = false;
+          } else if (msg.status === "complete") {
+            await processArrowData();
+          } else if (msg.status === "error") {
+            respEl.className = "response-box error";
+            log(`❌ Error: ${msg.error}`, "error");
+          }
+        }
+      }
+
+      // Step 3: Query Data
+      function queryData() {
+        if (!gatewayWs || gatewayWs.readyState !== WebSocket.OPEN) {
+          log("❌ No conectado al Gateway", "error");
+          return;
+        }
+
+        const dataset = document.getElementById("query-dataset").value;
+        chunks = [];
+        startTime = performance.now();
+
+        log(`📊 Solicitando: ${dataset}`, "ticket");
+        document.getElementById("query-btn").disabled = true;
+
+        gatewayWs.send(
+          JSON.stringify({
+            action: "query",
+            dataset: dataset,
+          })
+        );
+      }
+
+      // Process Arrow IPC data
+      async function processArrowData() {
+        const loadTime = (performance.now() - startTime) / 1000;
+        document.getElementById("total-time").textContent =
+          loadTime.toFixed(2) + "s";
+
+        try {
+          const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
+          const combined = new Uint8Array(totalLength);
+          let offset = 0;
+          for (const chunk of chunks) {
+            combined.set(chunk, offset);
+            offset += chunk.length;
+          }
+
+          log(`⚡ Procesando ${formatBytes(totalLength)}...`, "info");
+
+          const table = Arrow.tableFromIPC(combined);
+          const numRows = table.numRows;
+
+          document.getElementById("total-records").textContent =
+            numRows.toLocaleString();
+          log(
+            `✅ ${numRows.toLocaleString()} registros en ${loadTime.toFixed(
+              2
+            )}s`,
+            "success"
+          );
+
+          // Update chart
+          updateChart(table);
+        } catch (e) {
+          log(`❌ Error procesando: ${e.message}`, "error");
+        } finally {
+          document.getElementById("query-btn").disabled = false;
+          document.getElementById("progress-bar").style.width = "100%";
+          setTimeout(
+            () => (document.getElementById("progress-bar").style.width = "0%"),
+            1000
+          );
+        }
+      }
+
+      function updateChart(table) {
+        const ctx = document.getElementById("dataChart");
+        if (chart) chart.destroy();
+
+        // Try to find category and value columns
+        let categoryCol = null;
+        let valueCol = null;
+
+        for (const field of table.schema.fields) {
+          if (
+            field.name.toLowerCase().includes("category") ||
+            field.name.toLowerCase().includes("cat")
+          ) {
+            categoryCol = field.name;
+          }
+          if (
+            field.name.toLowerCase().includes("value") ||
+            field.name.toLowerCase().includes("val")
+          ) {
+            valueCol = field.name;
+          }
+        }
+
+        if (!categoryCol || !valueCol) {
+          // Use first string and first number columns
+          for (const field of table.schema.fields) {
+            const col = table.getChild(field.name);
+            const sample = col.get(0);
+            if (typeof sample === "string" && !categoryCol)
+              categoryCol = field.name;
+            if (typeof sample === "number" && !valueCol) valueCol = field.name;
+          }
+        }
+
+        if (!categoryCol || !valueCol) {
+          log("⚠️ No se encontraron columnas para graficar", "error");
+          return;
+        }
+
+        // Aggregate
+        const totals = {};
+        const catColumn = table.getChild(categoryCol);
+        const valColumn = table.getChild(valueCol);
+
+        for (let i = 0; i < Math.min(table.numRows, 100000); i++) {
+          const cat = catColumn.get(i) || "Unknown";
+          const val = valColumn.get(i) || 0;
+          totals[cat] = (totals[cat] || 0) + val;
+        }
+
+        chart = new Chart(ctx, {
+          type: "bar",
+          data: {
+            labels: Object.keys(totals),
+            datasets: [
+              {
+                label: `Total ${valueCol}`,
+                data: Object.values(totals),
+                backgroundColor: "rgba(247, 147, 26, 0.7)",
+                borderColor: "#f7931a",
+                borderWidth: 2,
+                borderRadius: 6,
+              },
+            ],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { labels: { color: "#71767b" } } },
+            scales: {
+              x: { ticks: { color: "#71767b" }, grid: { color: "#2f3336" } },
+              y: { ticks: { color: "#71767b" }, grid: { color: "#2f3336" } },
+            },
+          },
+        });
+      }
+
+      function formatBytes(bytes) {
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KB";
+        return (bytes / 1048576).toFixed(2) + " MB";
+      }
+
+      // Init
+      log("🎫 Tableros Test Page - Ready", "success");
+      log("1️⃣ Ingresa tu JWT token y solicita un ticket", "info");
+      log("2️⃣ Conecta al Gateway usando el ticket", "info");
+      log("3️⃣ Solicita datos del dataset", "info");
+    </script>
+  </body>
+</html>

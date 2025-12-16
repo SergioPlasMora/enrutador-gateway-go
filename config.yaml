@@ -2,19 +2,23 @@
 # Comunicación con conectores: gRPC/Arrow Flight
 
 # Puerto HTTP (WebSocket para browsers + Dashboard)
-http_port: 8080
+http_port: 8081
 
 # Puerto Arrow Flight (para CLI clients)
 flight_port: 8815
 
 # Conectores registrados (gRPC)
 # El gateway se conectará a estos conectores al iniciar
+# El ID debe coincidir con el cuenta_id del ticket
 connectors:
-  tenant_sergio: "localhost:50051"
-  # tenant_empresa_a: "192.168.1.10:50051"
-  # tenant_empresa_b: "10.0.0.5:50051"
+  511baf05-5839-4f58-a74e-661262facba8: "localhost:50051"
+  # tenant_sergio: "localhost:50051"  # Alias anterior
 
 # Timeouts
 timeouts:
   query_seconds: 60
   connect_seconds: 10
+
+# Clave secreta para tickets HMAC (debe ser idéntica en luzzi-core-im)
+# IMPORTANTE: Cambiar en producción y usar variable de entorno TABLEROS_SECRET_KEY
+tableros_secret_key: "a77046b8f2f14dd89bd885c8ea96967d"

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -43,6 +45,25 @@ func NewConnectorRegistry() *ConnectorRegistry {
 func (r *ConnectorRegistry) RegisterConnector(tenantID, address string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Fix for Docker environment: map localhost to host.docker.internal
+	// This allows the local connector to register as "localhost" but be reachable from the container
+	if os.Getenv("RUNNING_IN_DOCKER") == "true" {
+		originalAddress := address
+		if strings.Contains(address, "localhost") {
+			address = strings.Replace(address, "localhost", "host.docker.internal", 1)
+		} else if strings.Contains(address, "127.0.0.1") {
+			address = strings.Replace(address, "127.0.0.1", "host.docker.internal", 1)
+		} else if strings.Contains(address, "[::1]") {
+			address = strings.Replace(address, "[::1]", "host.docker.internal", 1)
+		} else if strings.Contains(address, "0.0.0.0") {
+			address = strings.Replace(address, "0.0.0.0", "host.docker.internal", 1)
+		}
+
+		if address != originalAddress {
+			log.Printf("[ConnectorRegistry] Docker fix: mapped %s -> %s", originalAddress, address)
+		}
+	}
 
 	// Crear cliente Flight
 	client, err := flight.NewClientWithMiddleware(

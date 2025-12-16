@@ -1,19 +1,36 @@
-version: '3.8'
-
 services:
-  gateway-go:
-    build: .
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: gateway-go
     ports:
-      - "8080:8080" # WebSocket
-      - "8815:8815" # Arrow Flight
+      - "8081:8081" # HTTP/WebSocket
+      - "8815:8815" # Arrow Flight gRPC
     environment:
-      - WS_PORT=8080
+      - HTTP_PORT=8081
       - FLIGHT_PORT=8815
-    networks:
-      - gateway-network
+      # Control Plane URL - adjust based on your setup
+      # If running luzzi-core-im in WSL Docker:
+      - CONTROL_PLANE_URL=http://host.docker.internal:8000/api/v2/control
+      # If both in same Docker network, use: http://app:8000/api/v2/control
+      - INTERNAL_API_KEY=dev-internal-key-change-in-production
+      # Redis - adjust based on your setup
+      # If Redis is in WSL Docker:
+      - REDIS_HOST=host.docker.internal
+      - REDIS_PORT=6379
+      - RUNNING_IN_DOCKER=true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "wget", "-q", "--spider", "http://localhost:8081/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
-networks:
-  gateway-network:
-    driver: bridge
+# To connect to luzzi-core-im network (if running in same Docker context):
+# networks:
+#   default:
+#     external: true
+#     name: backend_luzzi-core-network
