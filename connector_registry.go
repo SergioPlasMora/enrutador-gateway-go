@@ -19,18 +19,20 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// ConnectorRegistry mantiene el registro de conectores gRPC disponibles
+// ConnectorRegistry mantiene el registro de conectores disponibles (gRPC y WebSocket)
 type ConnectorRegistry struct {
 	mu         sync.RWMutex
-	connectors map[string]*ConnectorInfo // tenant_id → info
-	clients    map[string]flight.Client  // tenant_id → flight client
+	connectors map[string]*ConnectorInfo     // tenant_id → info
+	clients    map[string]flight.Client      // tenant_id → flight client (gRPC)
+	wsClients  map[string]*WSConnectorClient // tenant_id → WebSocket client
 }
 
 // ConnectorInfo contiene información de un conector
 type ConnectorInfo struct {
 	TenantID string `json:"tenant_id"`
-	Address  string `json:"address"` // host:port
+	Address  string `json:"address"` // host:port or "websocket"
 	Status   string `json:"status"`
+	Mode     string `json:"mode"` // "grpc" or "websocket"
 }
 
 // NewConnectorRegistry crea un nuevo registro de conectores
@@ -38,6 +40,7 @@ func NewConnectorRegistry() *ConnectorRegistry {
 	return &ConnectorRegistry{
 		connectors: make(map[string]*ConnectorInfo),
 		clients:    make(map[string]flight.Client),
+		wsClients:  make(map[string]*WSConnectorClient),
 	}
 }
 
@@ -80,14 +83,42 @@ func (r *ConnectorRegistry) RegisterConnector(tenantID, address string) error {
 		TenantID: tenantID,
 		Address:  address,
 		Status:   "connected",
+		Mode:     "grpc",
 	}
 	r.clients[tenantID] = client
 
-	log.Printf("[ConnectorRegistry] Registered: %s at %s", tenantID, address)
+	log.Printf("[ConnectorRegistry] Registered gRPC: %s at %s", tenantID, address)
 	return nil
 }
 
-// UnregisterConnector elimina un conector del registro
+// RegisterWSConnector registra un conector WebSocket
+func (r *ConnectorRegistry) RegisterWSConnector(tenantID string, client *WSConnectorClient) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.connectors[tenantID] = &ConnectorInfo{
+		TenantID: tenantID,
+		Address:  "websocket",
+		Status:   "connected",
+		Mode:     "websocket",
+	}
+	r.wsClients[tenantID] = client
+
+	log.Printf("[ConnectorRegistry] Registered WebSocket: %s", tenantID)
+}
+
+// UnregisterWSConnector elimina un conector WebSocket del registro
+func (r *ConnectorRegistry) UnregisterWSConnector(tenantID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	delete(r.wsClients, tenantID)
+	delete(r.connectors, tenantID)
+
+	log.Printf("[ConnectorRegistry] Unregistered WebSocket: %s", tenantID)
+}
+
+// UnregisterConnector elimina un conector del registro (gRPC)
 func (r *ConnectorRegistry) UnregisterConnector(tenantID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -98,10 +129,10 @@ func (r *ConnectorRegistry) UnregisterConnector(tenantID string) {
 	}
 	delete(r.connectors, tenantID)
 
-	log.Printf("[ConnectorRegistry] Unregistered: %s", tenantID)
+	log.Printf("[ConnectorRegistry] Unregistered gRPC: %s", tenantID)
 }
 
-// GetClient obtiene el cliente Flight para un tenant
+// GetClient obtiene el cliente Flight gRPC para un tenant
 func (r *ConnectorRegistry) GetClient(tenantID string) (flight.Client, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -110,13 +141,34 @@ func (r *ConnectorRegistry) GetClient(tenantID string) (flight.Client, bool) {
 	return client, exists
 }
 
-// IsConnected verifica si un tenant está conectado
+// GetWSClient obtiene el cliente WebSocket para un tenant
+func (r *ConnectorRegistry) GetWSClient(tenantID string) (*WSConnectorClient, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	client, exists := r.wsClients[tenantID]
+	return client, exists
+}
+
+// GetConnectorMode retorna el modo de conexión del tenant ("grpc", "websocket", o "" si no existe)
+func (r *ConnectorRegistry) GetConnectorMode(tenantID string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if info, exists := r.connectors[tenantID]; exists {
+		return info.Mode
+	}
+	return ""
+}
+
+// IsConnected verifica si un tenant está conectado (gRPC o WebSocket)
 func (r *ConnectorRegistry) IsConnected(tenantID string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	_, exists := r.clients[tenantID]
-	return exists
+	_, grpcExists := r.clients[tenantID]
+	_, wsExists := r.wsClients[tenantID]
+	return grpcExists || wsExists
 }
 
 // ListConnectors retorna la lista de conectores registrados
@@ -151,12 +203,25 @@ func (r *ConnectorRegistry) RegisterFromJSON(jsonData []byte) error {
 }
 
 // QueryDataToChannel consulta datos y envía chunks serializados a un canal
+// Soporta tanto conectores gRPC como WebSocket
 func (r *ConnectorRegistry) QueryDataToChannel(ctx context.Context, tenantID, dataset string, chunks chan []byte) error {
 	defer close(chunks) // IMPORTANTE: cerrar el canal al terminar
 
+	// Verificar modo de conexión
+	mode := r.GetConnectorMode(tenantID)
+	if mode == "" {
+		return fmt.Errorf("tenant not connected: %s", tenantID)
+	}
+
+	// Dispatch según el modo
+	if mode == "websocket" {
+		return r.queryDataViaWebSocket(ctx, tenantID, dataset, chunks)
+	}
+
+	// gRPC mode
 	client, exists := r.GetClient(tenantID)
 	if !exists {
-		return fmt.Errorf("tenant not connected: %s", tenantID)
+		return fmt.Errorf("gRPC client not found for tenant: %s", tenantID)
 	}
 
 	// Crear descriptor para el dataset
@@ -253,4 +318,72 @@ type arrowBytesWriter struct {
 func (w *arrowBytesWriter) Write(p []byte) (n int, err error) {
 	*w.buf = append(*w.buf, p...)
 	return len(p), nil
+}
+
+// queryDataViaWebSocket queries data through a WebSocket connector
+func (r *ConnectorRegistry) queryDataViaWebSocket(ctx context.Context, tenantID, dataset string, chunks chan []byte) error {
+	client, exists := r.GetWSClient(tenantID)
+	if !exists {
+		return fmt.Errorf("WebSocket client not found for tenant: %s", tenantID)
+	}
+
+	// Timeout para la operación completa
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+
+	requestID := fmt.Sprintf("req_%d", time.Now().UnixNano())
+
+	// 1. Enviar GetFlightInfo
+	log.Printf("[ConnectorRegistry] WebSocket GetFlightInfo for %s", dataset)
+	infoResp, err := client.SendCommand(ctx, &ConnectorMessage{
+		Action:    "get_flight_info",
+		RequestID: requestID,
+		Descriptor: map[string]interface{}{
+			"path": []string{dataset},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("get_flight_info failed: %w", err)
+	}
+	if infoResp.Status != "ok" {
+		return fmt.Errorf("get_flight_info error: %s", infoResp.Error)
+	}
+
+	// 2. Enviar DoGet
+	doGetID := fmt.Sprintf("get_%d", time.Now().UnixNano())
+	log.Printf("[ConnectorRegistry] WebSocket DoGet for %s", dataset)
+
+	// Registrar canal para recibir chunks binarios
+	chunkChan := make(chan []byte, 100)
+	client.chunksMu.Lock()
+	client.chunks[doGetID] = chunkChan
+	client.chunksMu.Unlock()
+
+	// Enviar comando DoGet
+	_, err = client.SendCommand(ctx, &ConnectorMessage{
+		Action:    "do_get",
+		RequestID: doGetID,
+		Ticket:    dataset, // El ticket es simplemente el dataset encoded
+	})
+	if err != nil {
+		return fmt.Errorf("do_get failed: %w", err)
+	}
+
+	// 3. Recibir chunks binarios
+	for {
+		select {
+		case chunk, ok := <-chunkChan:
+			if !ok {
+				// Canal cerrado = stream terminado
+				return nil
+			}
+			select {
+			case chunks <- chunk:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }

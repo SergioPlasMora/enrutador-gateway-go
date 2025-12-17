@@ -72,6 +72,12 @@ func main() {
 	// Registrar rutas HTTP
 	browserWS := NewBrowserWSServerGRPC(registry)
 	http.HandleFunc("/ws/browser", browserWS.HandleConnection)
+
+	// WebSocket endpoint for Data Connectors (reverse tunnel mode)
+	connectorWS := NewConnectorWSServer(registry)
+	http.HandleFunc("/ws/connect", connectorWS.HandleConnection)
+	log.Printf("[Main] WebSocket /ws/connect endpoint enabled for connector reverse tunnels")
+
 	http.Handle("/dashboard/", http.StripPrefix("/dashboard/", staticServer))
 	http.Handle("/dashboard", http.RedirectHandler("/dashboard/", http.StatusMovedPermanently))
 

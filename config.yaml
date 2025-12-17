@@ -11,9 +11,10 @@ flight_port: 8815
 # El gateway se conectará a estos conectores al iniciar
 # El ID debe coincidir con el cuenta_id del ticket
 connectors:
+  # Conectores apuntando a tu máquina local (IP pública)
   511baf05-5839-4f58-a74e-661262facba8: "localhost:50051"
   bf935f05-bf2e-4138-bfec-f4baaf99fecc: "localhost:50051"
-  # tenant_sergio: "localhost:50051"  # Alias anterior
+  dcfedd1c-476c-4cc5-a4d7-6b0ccca8126c: "localhost:50051"
 
 # Timeouts
 timeouts:
