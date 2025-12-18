@@ -119,7 +119,10 @@ func (s *StreamServerV2) HandleStream(w http.ResponseWriter, r *http.Request) {
 			// Read message with timeout
 			_, data, err := ws.ReadMessage()
 			if err != nil {
-				log.Printf("[StreamV2] Read error: %v", err)
+				// Only log unexpected errors, not normal disconnects
+				if !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseNoStatusReceived) {
+					log.Printf("[StreamV2] Read error: %v", err)
+				}
 				return
 			}
 

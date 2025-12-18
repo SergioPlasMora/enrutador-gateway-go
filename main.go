@@ -69,10 +69,6 @@ func main() {
 
 	// === End CDP Edge Components ===
 
-	// Registrar rutas HTTP
-	browserWS := NewBrowserWSServerGRPC(registry)
-	http.HandleFunc("/ws/browser", browserWS.HandleConnection)
-
 	// WebSocket endpoint for Data Connectors (reverse tunnel mode)
 	connectorWS := NewConnectorWSServer(registry)
 	http.HandleFunc("/ws/connect", connectorWS.HandleConnection)
