@@ -2,7 +2,7 @@
 # Los conectores se registran dinámicamente vía WebSocket reverse tunnel
 
 # Modo de transporte websocket o gRPC
-transport_mode: "websocket"
+transport_mode: "grpc"
 grpc_port: 50051
 
 # Puerto HTTP (WebSocket para browsers + Dashboard)
