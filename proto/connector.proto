@@ -1,0 +1,94 @@
+syntax = "proto3";
+
+package connector;
+
+option go_package = "github.com/enrutador-gateway-go/proto";
+
+// ConnectorService permite túnel reverso: Connector inicia conexión, Gateway envía comandos
+service ConnectorService {
+  // Connect establece stream bidireccional para el túnel reverso
+  rpc Connect(stream ConnectorMessage) returns (stream GatewayCommand) {}
+}
+
+// Mensajes del Connector al Gateway
+message ConnectorMessage {
+  string request_id = 1;
+  
+  oneof payload {
+    RegisterRequest register = 2;
+    FlightInfoResponse flight_info = 3;
+    ArrowChunk arrow_chunk = 4;
+    StreamStatus stream_status = 5;
+    HeartbeatResponse heartbeat = 6;
+  }
+}
+
+// Comandos del Gateway al Connector
+message GatewayCommand {
+  string request_id = 1;
+  
+  oneof command {
+    RegisterResponse register_response = 2;
+    GetFlightInfoRequest get_flight_info = 3;
+    DoGetRequest do_get = 4;
+    Heartbeat heartbeat = 5;
+  }
+}
+
+// ============== Registro ==============
+message RegisterRequest {
+  string tenant_id = 1;
+  string version = 2;
+  repeated string datasets = 3;
+}
+
+message RegisterResponse {
+  string status = 1;
+  string session_id = 2;
+  string error = 3;
+}
+
+// ============== Flight Info ==============
+message GetFlightInfoRequest {
+  repeated string path = 1;
+  int64 rows = 2;
+}
+
+message FlightInfoResponse {
+  string status = 1;
+  bytes schema = 2;  // Arrow schema serializado
+  int64 total_records = 3;
+  int64 total_bytes = 4;
+  string dataset = 5;
+  int32 partitions = 6;
+  string error = 7;
+}
+
+// ============== DoGet ==============
+message DoGetRequest {
+  string ticket = 1;  // base64 encoded JSON con partition info
+}
+
+message ArrowChunk {
+  bytes data = 1;  // Arrow IPC RecordBatch
+  int32 partition = 2;
+}
+
+message StreamStatus {
+  string type = 1;  // "stream_start" o "stream_end"
+  bytes schema = 2;
+  int32 partition = 3;
+  int32 total_partitions = 4;
+  int64 total_bytes = 5;
+  string error = 6;
+}
+
+// ============== Heartbeat ==============
+message Heartbeat {
+  int64 timestamp = 1;
+}
+
+message HeartbeatResponse {
+  string tenant_id = 1;
+  int64 timestamp = 2;
+}

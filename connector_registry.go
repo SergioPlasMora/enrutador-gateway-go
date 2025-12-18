@@ -22,26 +22,28 @@ import (
 
 // ConnectorRegistry mantiene el registro de conectores disponibles (gRPC y WebSocket)
 type ConnectorRegistry struct {
-	mu         sync.RWMutex
-	connectors map[string]*ConnectorInfo     // tenant_id → info
-	clients    map[string]flight.Client      // tenant_id → flight client (gRPC)
-	wsClients  map[string]*WSConnectorClient // tenant_id → WebSocket client
+	mu          sync.RWMutex
+	connectors  map[string]*ConnectorInfo       // tenant_id → info
+	clients     map[string]flight.Client        // tenant_id → flight client (legacy)
+	wsClients   map[string]*WSConnectorClient   // tenant_id → WebSocket client
+	grpcClients map[string]*GRPCConnectorClient // tenant_id → gRPC bidirectional client
 }
 
 // ConnectorInfo contiene información de un conector
 type ConnectorInfo struct {
 	TenantID string `json:"tenant_id"`
-	Address  string `json:"address"` // host:port or "websocket"
+	Address  string `json:"address"` // host:port or "websocket" or "grpc"
 	Status   string `json:"status"`
-	Mode     string `json:"mode"` // "grpc" or "websocket"
+	Mode     string `json:"mode"` // "grpc", "websocket", or "grpc-bidi"
 }
 
 // NewConnectorRegistry crea un nuevo registro de conectores
 func NewConnectorRegistry() *ConnectorRegistry {
 	return &ConnectorRegistry{
-		connectors: make(map[string]*ConnectorInfo),
-		clients:    make(map[string]flight.Client),
-		wsClients:  make(map[string]*WSConnectorClient),
+		connectors:  make(map[string]*ConnectorInfo),
+		clients:     make(map[string]flight.Client),
+		wsClients:   make(map[string]*WSConnectorClient),
+		grpcClients: make(map[string]*GRPCConnectorClient),
 	}
 }
 
@@ -119,6 +121,42 @@ func (r *ConnectorRegistry) UnregisterWSConnector(tenantID string) {
 	log.Printf("[ConnectorRegistry] Unregistered WebSocket: %s", tenantID)
 }
 
+// RegisterGRPCConnector registra un conector gRPC bidireccional
+func (r *ConnectorRegistry) RegisterGRPCConnector(tenantID string, client *GRPCConnectorClient) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.connectors[tenantID] = &ConnectorInfo{
+		TenantID: tenantID,
+		Address:  "grpc-bidi",
+		Status:   "connected",
+		Mode:     "grpc-bidi",
+	}
+	r.grpcClients[tenantID] = client
+
+	log.Printf("[ConnectorRegistry] Registered gRPC-Bidi: %s", tenantID)
+}
+
+// UnregisterGRPCConnector elimina un conector gRPC del registro
+func (r *ConnectorRegistry) UnregisterGRPCConnector(tenantID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	delete(r.grpcClients, tenantID)
+	delete(r.connectors, tenantID)
+
+	log.Printf("[ConnectorRegistry] Unregistered gRPC-Bidi: %s", tenantID)
+}
+
+// GetGRPCClient obtiene el cliente gRPC para un tenant
+func (r *ConnectorRegistry) GetGRPCClient(tenantID string) (*GRPCConnectorClient, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	client, exists := r.grpcClients[tenantID]
+	return client, exists
+}
+
 // UnregisterConnector elimina un conector del registro (gRPC)
 func (r *ConnectorRegistry) UnregisterConnector(tenantID string) {
 	r.mu.Lock()
@@ -162,14 +200,15 @@ func (r *ConnectorRegistry) GetConnectorMode(tenantID string) string {
 	return ""
 }
 
-// IsConnected verifica si un tenant está conectado (gRPC o WebSocket)
+// IsConnected verifica si un tenant está conectado (gRPC, WebSocket o gRPC-bidi)
 func (r *ConnectorRegistry) IsConnected(tenantID string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	_, grpcExists := r.clients[tenantID]
 	_, wsExists := r.wsClients[tenantID]
-	return grpcExists || wsExists
+	_, grpcBidiExists := r.grpcClients[tenantID]
+	return grpcExists || wsExists || grpcBidiExists
 }
 
 // ListConnectors retorna la lista de conectores registrados
@@ -219,7 +258,12 @@ func (r *ConnectorRegistry) QueryDataToChannel(ctx context.Context, tenantID, da
 		return r.queryDataViaWebSocket(ctx, tenantID, dataset, chunks)
 	}
 
-	// gRPC mode
+	// gRPC-bidi mode (nuevo túnel reverso gRPC)
+	if mode == "grpc-bidi" {
+		return r.queryDataViaGRPCBidi(ctx, tenantID, dataset, chunks)
+	}
+
+	// gRPC mode (legacy - conexión directa)
 	client, exists := r.GetClient(tenantID)
 	if !exists {
 		return fmt.Errorf("gRPC client not found for tenant: %s", tenantID)
@@ -440,6 +484,117 @@ func (r *ConnectorRegistry) fetchPartition(ctx context.Context, client *WSConnec
 			if !ok {
 				// Canal cerrado = partición terminada
 				log.Printf("[ConnectorRegistry] Partition %d complete", partition)
+				return nil
+			}
+			select {
+			case chunks <- chunk:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+// queryDataViaGRPCBidi handles data queries via gRPC bidirectional tunnel
+func (r *ConnectorRegistry) queryDataViaGRPCBidi(ctx context.Context, tenantID, dataset string, chunks chan []byte) error {
+	client, exists := r.GetGRPCClient(tenantID)
+	if !exists {
+		return fmt.Errorf("gRPC-bidi client not found for tenant: %s", tenantID)
+	}
+
+	// Timeout
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+
+	requestID := fmt.Sprintf("query_%d", time.Now().UnixNano())
+
+	// 1. Send GetFlightInfo
+	log.Printf("[ConnectorRegistry] gRPC-Bidi GetFlightInfo for %s", dataset)
+	infoCmd := map[string]interface{}{
+		"request_id": requestID,
+		"type":       "get_flight_info",
+		"get_flight_info": map[string]interface{}{
+			"path": []interface{}{dataset},
+		},
+	}
+
+	infoResp, err := client.SendCommand(ctx, infoCmd)
+	if err != nil {
+		return fmt.Errorf("get_flight_info failed: %w", err)
+	}
+
+	// Check response
+	flightInfo, _ := infoResp["flight_info"].(map[string]interface{})
+	if flightInfo == nil {
+		return fmt.Errorf("invalid flight_info response")
+	}
+
+	status, _ := flightInfo["status"].(string)
+	if status != "ok" {
+		errMsg, _ := flightInfo["error"].(string)
+		return fmt.Errorf("get_flight_info error: %s", errMsg)
+	}
+
+	partitions := 1
+	if p, ok := flightInfo["partitions"].(float64); ok {
+		partitions = int(p)
+	}
+
+	log.Printf("[ConnectorRegistry] gRPC-Bidi GetFlightInfo: %d partitions", partitions)
+
+	// 2. Create chunk channel for receiving
+	chunkCh := make(chan []byte, 1000)
+	doGetID := fmt.Sprintf("doget_%d", time.Now().UnixNano())
+	client.chunksMu.Lock()
+	client.chunks[doGetID] = chunkCh
+	client.chunksMu.Unlock()
+
+	defer func() {
+		client.chunksMu.Lock()
+		delete(client.chunks, doGetID)
+		client.chunksMu.Unlock()
+	}()
+
+	// 3. Send DoGet command
+	log.Printf("[ConnectorRegistry] gRPC-Bidi DoGet for %s", dataset)
+
+	ticketData := map[string]interface{}{
+		"dataset":          dataset,
+		"partition":        0,
+		"total_partitions": partitions,
+	}
+	ticketBytes, _ := json.Marshal(ticketData)
+	ticketB64 := base64.StdEncoding.EncodeToString(ticketBytes)
+
+	doGetCmd := map[string]interface{}{
+		"request_id": doGetID,
+		"type":       "do_get",
+		"do_get": map[string]interface{}{
+			"ticket": ticketB64,
+		},
+	}
+
+	cmdStruct, err := mapToStruct(doGetCmd)
+	if err != nil {
+		return fmt.Errorf("failed to create doget command: %w", err)
+	}
+
+	client.writeMu.Lock()
+	err = client.stream.Send(cmdStruct)
+	client.writeMu.Unlock()
+
+	if err != nil {
+		return fmt.Errorf("doget send failed: %w", err)
+	}
+
+	// 4. Receive chunks until channel is closed
+	for {
+		select {
+		case chunk, ok := <-chunkCh:
+			if !ok {
+				log.Printf("[ConnectorRegistry] gRPC-Bidi DoGet complete")
 				return nil
 			}
 			select {

@@ -68,7 +68,36 @@ func main() {
 	// WebSocket endpoint for Data Connectors (reverse tunnel mode)
 	connectorWS := NewConnectorWSServer(registry)
 	http.HandleFunc("/ws/connect", connectorWS.HandleConnection)
-	log.Printf("[Main] WebSocket /ws/connect endpoint enabled for connector reverse tunnels")
+
+	// Determinar modo de transporte para conectores
+	transportMode := "websocket" // default
+	if tm, ok := config["transport_mode"].(string); ok {
+		transportMode = tm
+	}
+
+	// Puerto gRPC para conectores (si se usa modo gRPC)
+	grpcPort := 50051
+	if gp, ok := config["grpc_port"].(string); ok {
+		fmt.Sscanf(gp, "%d", &grpcPort)
+	}
+
+	log.Printf("[Main] Connector transport mode: %s", transportMode)
+
+	// Iniciar servidor gRPC para conectores si está habilitado
+	var connectorGRPC *ConnectorGRPCServer
+	if transportMode == "grpc" || transportMode == "both" {
+		connectorGRPC = NewConnectorGRPCServer(registry, grpcPort)
+		go func() {
+			if err := connectorGRPC.Start(); err != nil {
+				log.Printf("[Main] gRPC server error: %v", err)
+			}
+		}()
+		log.Printf("[Main] gRPC /Connect endpoint enabled for connector reverse tunnels on :%d", grpcPort)
+	}
+
+	if transportMode == "websocket" || transportMode == "both" {
+		log.Printf("[Main] WebSocket /ws/connect endpoint enabled for connector reverse tunnels")
+	}
 
 	http.Handle("/dashboard/", http.StripPrefix("/dashboard/", staticServer))
 	http.Handle("/dashboard", http.RedirectHandler("/dashboard/", http.StatusMovedPermanently))
@@ -111,6 +140,9 @@ func main() {
 	log.Println("[Main] Shutting down...")
 
 	// Graceful shutdown
+	if connectorGRPC != nil {
+		connectorGRPC.Stop()
+	}
 	redisSubscriber.Stop()
 	sessionManager.Stop()
 }
