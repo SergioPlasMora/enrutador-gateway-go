@@ -363,31 +363,16 @@ func (r *ConnectorRegistry) queryDataViaWebSocket(ctx context.Context, tenantID,
 		}
 	}
 
-	log.Printf("[ConnectorRegistry] Starting %d parallel partition(s) for %s", partitions, dataset)
+	log.Printf("[ConnectorRegistry] Starting %d partition(s) for %s", partitions, dataset)
 
-	// 3. Lanzar goroutines para cada partición
-	var wg sync.WaitGroup
-	errChan := make(chan error, partitions)
-
+	// Procesar particiones SECUENCIALMENTE
+	// Nota: No podemos usar goroutines paralelas porque los chunks binarios
+	// no incluyen request_id y serían ruteados a todos los canales activos.
+	// El paralelismo debe venir de múltiples workers WebSocket (parallel_connections).
 	for i := 0; i < partitions; i++ {
-		wg.Add(1)
-		go func(partition int) {
-			defer wg.Done()
-			err := r.fetchPartition(ctx, client, dataset, partition, partitions, chunks)
-			if err != nil {
-				log.Printf("[ConnectorRegistry] Partition %d error: %v", partition, err)
-				errChan <- err
-			}
-		}(i)
-	}
-
-	// 4. Esperar a que todas las particiones terminen
-	wg.Wait()
-	close(errChan)
-
-	// Verificar si hubo errores
-	for err := range errChan {
+		err := r.fetchPartition(ctx, client, dataset, i, partitions, chunks)
 		if err != nil {
+			log.Printf("[ConnectorRegistry] Partition %d error: %v", i, err)
 			return err
 		}
 	}
