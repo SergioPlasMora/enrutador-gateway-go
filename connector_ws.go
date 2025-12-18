@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -163,19 +164,34 @@ func (s *ConnectorWSServer) HandleConnection(w http.ResponseWriter, r *http.Requ
 }
 
 // handleBinaryChunk routes binary data to the appropriate request channel
+// Binary chunks are prefixed with 36-byte request_id for routing
 func (c *WSConnectorClient) handleBinaryChunk(data []byte) {
-	c.chunksMu.RLock()
-	defer c.chunksMu.RUnlock()
+	// Check minimum length (36 bytes prefix + at least 1 byte of data)
+	if len(data) < 37 {
+		log.Printf("[ConnectorWS] Binary chunk too small: %d bytes", len(data))
+		return
+	}
 
-	// Binary chunks come with request_id in the first 36 bytes (UUID format)
-	// But our protocol sends them without prefix, so we route to the single active request
-	// For now, broadcast to all pending chunk channels
-	for _, ch := range c.chunks {
+	// Extract request_id from first 36 bytes
+	requestID := string(data[:36])
+	// Trim padding (spaces) from request_id
+	requestID = strings.TrimRight(requestID, " ")
+
+	// Extract actual Arrow IPC data (after prefix)
+	arrowData := data[36:]
+
+	c.chunksMu.RLock()
+	ch, exists := c.chunks[requestID]
+	c.chunksMu.RUnlock()
+
+	if exists {
 		select {
-		case ch <- data:
+		case ch <- arrowData:
 		default:
-			// Channel full, skip
+			log.Printf("[ConnectorWS] Channel full for request %s", requestID)
 		}
+	} else {
+		log.Printf("[ConnectorWS] No channel for request_id: %s", requestID)
 	}
 }
 
