@@ -272,11 +272,11 @@ Apache Arrow es un proyecto de la Apache Software Foundation que define:
 
 | Puerto | Protocolo | Dirección | Descripción |
 |--------|-----------|-----------|-------------|
-| **8081** | WebSocket | Connector → Gateway | Reverse tunnel, registro dinámico |
+| **8081** | WebSocket | Connector → Gateway | Reverse tunnel, registro dinámico (`/ws/connect`) |
 | **8081** | WebSocket | Browser → Gateway | Stream de datos (`/stream/{session_id}`) |
-| **8081** | HTTP | Gateway | Dashboard, health check |
+| **8081** | HTTP | Gateway | Dashboard, health check (`/dashboard/`, `/health`) |
 
-> **Nota:** Ya no se usa el puerto 50051 (gRPC). Todo pasa por WebSocket en puerto 8081.
+> **Nota:** Todo el tráfico pasa por WebSocket en puerto 8081. No se requieren puertos adicionales.
 
 ---
 

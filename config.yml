@@ -1,10 +1,9 @@
 server:
   websocket_port: 8080
-  flight_port: 8815
-  
+
 timeouts:
   request_timeout: 30s
   stream_timeout: 300s
-  
+
 logging:
   level: info

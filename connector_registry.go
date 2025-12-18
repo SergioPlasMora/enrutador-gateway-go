@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -320,7 +321,7 @@ func (w *arrowBytesWriter) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-// queryDataViaWebSocket queries data through a WebSocket connector
+// queryDataViaWebSocket queries data through a WebSocket connector with parallel partitions
 func (r *ConnectorRegistry) queryDataViaWebSocket(ctx context.Context, tenantID, dataset string, chunks chan []byte) error {
 	client, exists := r.GetWSClient(tenantID)
 	if !exists {
@@ -333,7 +334,7 @@ func (r *ConnectorRegistry) queryDataViaWebSocket(ctx context.Context, tenantID,
 
 	requestID := fmt.Sprintf("req_%d", time.Now().UnixNano())
 
-	// 1. Enviar GetFlightInfo
+	// 1. Enviar GetFlightInfo para obtener número de particiones
 	log.Printf("[ConnectorRegistry] WebSocket GetFlightInfo for %s", dataset)
 	infoResp, err := client.SendCommand(ctx, &ConnectorMessage{
 		Action:    "get_flight_info",
@@ -349,32 +350,95 @@ func (r *ConnectorRegistry) queryDataViaWebSocket(ctx context.Context, tenantID,
 		return fmt.Errorf("get_flight_info error: %s", infoResp.Error)
 	}
 
-	// 2. Enviar DoGet
-	doGetID := fmt.Sprintf("get_%d", time.Now().UnixNano())
-	log.Printf("[ConnectorRegistry] WebSocket DoGet for %s", dataset)
+	// 2. Obtener número de particiones de la respuesta
+	partitions := 1
+	if infoResp.Data != nil {
+		if p, ok := infoResp.Data["partitions"]; ok {
+			switch v := p.(type) {
+			case float64:
+				partitions = int(v)
+			case int:
+				partitions = v
+			}
+		}
+	}
 
-	// Registrar canal para recibir chunks binarios
+	log.Printf("[ConnectorRegistry] Starting %d parallel partition(s) for %s", partitions, dataset)
+
+	// 3. Lanzar goroutines para cada partición
+	var wg sync.WaitGroup
+	errChan := make(chan error, partitions)
+
+	for i := 0; i < partitions; i++ {
+		wg.Add(1)
+		go func(partition int) {
+			defer wg.Done()
+			err := r.fetchPartition(ctx, client, dataset, partition, partitions, chunks)
+			if err != nil {
+				log.Printf("[ConnectorRegistry] Partition %d error: %v", partition, err)
+				errChan <- err
+			}
+		}(i)
+	}
+
+	// 4. Esperar a que todas las particiones terminen
+	wg.Wait()
+	close(errChan)
+
+	// Verificar si hubo errores
+	for err := range errChan {
+		if err != nil {
+			return err
+		}
+	}
+
+	log.Printf("[ConnectorRegistry] All %d partitions complete", partitions)
+	return nil
+}
+
+// fetchPartition fetches a single partition from the connector
+func (r *ConnectorRegistry) fetchPartition(ctx context.Context, client *WSConnectorClient, dataset string, partition, totalPartitions int, chunks chan []byte) error {
+	// Crear ticket con información de partición (base64 encoded JSON)
+	ticketData := map[string]interface{}{
+		"dataset":          dataset,
+		"partition":        partition,
+		"total_partitions": totalPartitions,
+	}
+	ticketJSON, _ := json.Marshal(ticketData)
+	ticketB64 := base64.StdEncoding.EncodeToString(ticketJSON)
+
+	doGetID := fmt.Sprintf("get_%d_p%d", time.Now().UnixNano(), partition)
+	log.Printf("[ConnectorRegistry] DoGet partition %d/%d for %s", partition, totalPartitions, dataset)
+
+	// Registrar canal para recibir chunks binarios de esta partición
 	chunkChan := make(chan []byte, 100)
 	client.chunksMu.Lock()
 	client.chunks[doGetID] = chunkChan
 	client.chunksMu.Unlock()
 
-	// Enviar comando DoGet
-	_, err = client.SendCommand(ctx, &ConnectorMessage{
+	defer func() {
+		client.chunksMu.Lock()
+		delete(client.chunks, doGetID)
+		client.chunksMu.Unlock()
+	}()
+
+	// Enviar comando DoGet con ticket de partición
+	_, err := client.SendCommand(ctx, &ConnectorMessage{
 		Action:    "do_get",
 		RequestID: doGetID,
-		Ticket:    dataset, // El ticket es simplemente el dataset encoded
+		Ticket:    ticketB64,
 	})
 	if err != nil {
-		return fmt.Errorf("do_get failed: %w", err)
+		return fmt.Errorf("do_get partition %d failed: %w", partition, err)
 	}
 
-	// 3. Recibir chunks binarios
+	// Recibir chunks binarios de esta partición
 	for {
 		select {
 		case chunk, ok := <-chunkChan:
 			if !ok {
-				// Canal cerrado = stream terminado
+				// Canal cerrado = partición terminada
+				log.Printf("[ConnectorRegistry] Partition %d complete", partition)
 				return nil
 			}
 			select {

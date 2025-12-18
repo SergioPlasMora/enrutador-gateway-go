@@ -18,15 +18,11 @@ func main() {
 	// Leer configuración
 	config := loadConfig()
 
-	// Configurar puertos
+	// Configurar puerto HTTP/WebSocket
 	httpPort := 8081
-	flightPort := 8815
 
 	if p := os.Getenv("HTTP_PORT"); p != "" {
 		fmt.Sscanf(p, "%d", &httpPort)
-	}
-	if p := os.Getenv("FLIGHT_PORT"); p != "" {
-		fmt.Sscanf(p, "%d", &flightPort)
 	}
 
 	// Crear ConnectorRegistry para conexiones gRPC a Data Connectors
@@ -102,17 +98,8 @@ func main() {
 		}
 	}()
 
-	// Iniciar Flight Server (para CLI clients como unified-evaluator)
-	flightServer := NewFlightServerGRPC(registry, flightPort)
-	go func() {
-		if err := flightServer.Start(); err != nil {
-			log.Fatalf("[Main] Flight server error: %v", err)
-		}
-	}()
-
 	log.Printf("[Main] Gateway started")
 	log.Printf("[Main]   HTTP/WebSocket: :%d", httpPort)
-	log.Printf("[Main]   Arrow Flight:   :%d", flightPort)
 	log.Printf("[Main]   Dashboard:      http://localhost:%d/dashboard/", httpPort)
 	log.Printf("[Main]   Stream (CDP):   ws://localhost:%d/stream/{session_id}", httpPort)
 
