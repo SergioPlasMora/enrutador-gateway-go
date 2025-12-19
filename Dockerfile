@@ -13,6 +13,7 @@ RUN go mod download
 # Copy source code
 COPY *.go ./
 COPY templates/ ./templates/
+COPY proto/ ./proto/
 
 # Build the binary
 RUN CGO_ENABLED=0 GOOS=linux go build -o gateway .
