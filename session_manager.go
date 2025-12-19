@@ -133,6 +133,7 @@ func NewSessionManager(controlPlane *ControlPlaneClient) *SessionManager {
 	// Start background cleanup of expired sessions
 	go sm.cleanupLoop()
 
+	log.Println("[SessionManager] Initialized with DEBUG MODE enabled")
 	return sm
 }
 
@@ -151,7 +152,24 @@ func (sm *SessionManager) GetOrCreateSession(sessionID string) (*Session, error)
 	// Validate with Control Plane
 	info, err := sm.controlPlane.ValidateSession(sessionID)
 	if err != nil {
-		return nil, err
+		// DEBUG MODE: If Control Plane is not available, create a debug session
+		// This allows local testing without running luzzi-core-im
+		log.Printf("[SessionManager] Control Plane error: %v - creating DEBUG session", err)
+
+		// Use sessionID as cuenta_id for debug mode
+		debugInfo := &SessionInfo{
+			SessionID: sessionID,
+			UserID:    "debug-user",
+			CuentaID:  sessionID, // Use session as cuenta
+			EdgeID:    "debug-edge",
+			Dataset:   "dataset_10mb",
+			ExpiresAt: time.Now().Add(1 * time.Hour).Format(time.RFC3339),
+		}
+
+		session := NewSession(debugInfo)
+		sm.sessions.Store(sessionID, session)
+		log.Printf("[SessionManager] DEBUG session created: %s (cuenta=%s)", sessionID, session.CuentaID)
+		return session, nil
 	}
 	if info == nil {
 		return nil, nil // Session not valid

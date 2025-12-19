@@ -211,6 +211,24 @@ func (r *ConnectorRegistry) IsConnected(tenantID string) bool {
 	return grpcExists || wsExists || grpcBidiExists
 }
 
+// GetConnectedTenants returns a list of all connected tenant IDs (for debugging)
+func (r *ConnectorRegistry) GetConnectedTenants() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	tenants := make([]string, 0)
+	for id := range r.clients {
+		tenants = append(tenants, id+" (grpc)")
+	}
+	for id := range r.wsClients {
+		tenants = append(tenants, id+" (websocket)")
+	}
+	for id := range r.grpcClients {
+		tenants = append(tenants, id+" (grpc-bidi)")
+	}
+	return tenants
+}
+
 // ListConnectors retorna la lista de conectores registrados
 func (r *ConnectorRegistry) ListConnectors() []*ConnectorInfo {
 	r.mu.RLock()

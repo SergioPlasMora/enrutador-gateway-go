@@ -3,11 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Arrow Dashboard - WebSocket Streaming</title>
+    <title>Arrow Dashboard + DuckDB WASM</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <script type="module">
       import { tableFromIPC } from 'https://cdn.jsdelivr.net/npm/apache-arrow@14.0.2/+esm';
+      import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.28.0/+esm';
       window.Arrow = { tableFromIPC };
+      window.DuckDB = duckdb;
     </script>
     <style>
       * {
@@ -281,18 +283,19 @@
     <div class="progress-bar" id="progress-bar"></div>
 
     <div class="header">
-      <h1>⚡ Arrow WebSocket Dashboard</h1>
+      <h1>🦆 Arrow + DuckDB Dashboard</h1>
       <div class="controls">
         <div class="connection-status" id="ws-status">
           <span class="dot"></span>
           <span id="ws-status-text">Disconnected</span>
         </div>
         <input
-          id="tenant"
-          value="tenant_sergio"
-          placeholder="Tenant ID"
-          style="width: 180px"
+          id="session-id"
+          value=""
+          placeholder="Session ID (del Connector)"
+          style="width: 200px"
         />
+        <button onclick="reconnect()" class="secondary">🔄 Connect</button>
         <select id="dataset" style="width: 180px">
           <option value="dataset_1kb">dataset_1kb.json (1 KB)</option>
           <option value="dataset_1mb">dataset_1mb.csv (1 MB)</option>
@@ -374,6 +377,18 @@
           </tbody>
         </table>
       </div>
+
+      <!-- DuckDB Query Panel -->
+      <div class="chart-card wide" id="duckdb-panel">
+        <h3>🦆 DuckDB WASM - SQL Query</h3>
+        <div id="duckdb-status" style="margin-bottom: 1rem; color: #f7931a;">Initializing DuckDB...</div>
+        <div style="display: flex; gap: 1rem; margin-bottom: 1rem;">
+          <textarea id="sql-input" style="flex: 1; background: #202e3a; border: 1px solid #2f3336; border-radius: 8px; padding: 0.75rem; color: #e7e9ea; font-family: monospace; font-size: 13px; resize: vertical; min-height: 60px;">SELECT category, COUNT(*) as total, AVG(value) as avg_value FROM data GROUP BY category</textarea>
+          <button onclick="runSQLQuery()" id="sql-btn" disabled style="align-self: flex-start;">▶ Run</button>
+        </div>
+        <div id="sql-results" style="max-height: 300px; overflow: auto;"></div>
+        <div style="margin-top: 0.5rem; font-size: 11px; color: #71767b;">Tip: También puedes usar <code>await query("SQL")</code> en la consola (F12)</div>
+      </div>
     </div>
 
     <div id="log"></div>
@@ -385,6 +400,11 @@
       let charts = {};
       let chunks = [];
       let startTime = 0;
+      
+      // DuckDB WASM
+      let duckDB = null;
+      let duckConn = null;
+      let duckDBReady = false;
 
       // Colores del tema
       const colors = {
@@ -440,8 +460,15 @@
 
       // Conectar WebSocket
       function connectWebSocket() {
+        const sessionId = document.getElementById('session-id').value.trim();
+        if (!sessionId) {
+          log('Enter a Session ID to connect', 'error');
+          updateConnectionStatus('disconnected');
+          return;
+        }
+        
         const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-        const wsUrl = `${protocol}//${window.location.host}/ws/browser`;
+        const wsUrl = `${protocol}//${window.location.host}/stream/${sessionId}`;
 
         log(`Connecting to ${wsUrl}...`);
         ws = new WebSocket(wsUrl);
@@ -455,7 +482,7 @@
         ws.onclose = () => {
           updateConnectionStatus("disconnected");
           log("WebSocket disconnected");
-          setTimeout(connectWebSocket, 3000);
+          // Don't auto-reconnect - wait for user to click Connect
         };
 
         ws.onerror = (e) => {
@@ -536,6 +563,47 @@
             `✓ Parsed ${formatNumber(numRows)} rows in ${loadTime.toFixed(2)}s`,
             "success"
           );
+          
+          // === DUCKDB WASM: Cargar datos desde allData ===
+          if (duckDBReady && allData.length > 0) {
+            try {
+              const duckStart = performance.now();
+              
+              // Drop existing table
+              await duckConn.query(`DROP TABLE IF EXISTS data`);
+              
+              // Get column info from first row
+              const cols = Object.keys(allData[0]);
+              
+              // Create table with text columns (simple approach)
+              const colDefs = cols.map(c => `"${c}" VARCHAR`).join(', ');
+              await duckConn.query(`CREATE TABLE data (${colDefs})`);
+              
+              // Insert data in batches for performance
+              const batchSize = 1000;
+              for (let i = 0; i < allData.length; i += batchSize) {
+                const batch = allData.slice(i, i + batchSize);
+                const values = batch.map(row => 
+                  '(' + cols.map(c => {
+                    const v = row[c];
+                    if (v === null || v === undefined) return 'NULL';
+                    if (typeof v === 'number' || typeof v === 'bigint') return String(v);
+                    return `'${String(v).replace(/'/g, "''")}'`;
+                  }).join(', ') + ')'
+                ).join(', ');
+                await duckConn.query(`INSERT INTO data VALUES ${values}`);
+              }
+              
+              const duckTime = Math.round(performance.now() - duckStart);
+              log(`🦆 DuckDB: ${formatNumber(allData.length)} rows loaded in ${duckTime}ms`, 'success');
+              document.getElementById('duckdb-status').textContent = `✅ Tabla 'data' lista: ${formatNumber(allData.length)} filas`;
+              document.getElementById('duckdb-status').style.color = '#00ba7c';
+              document.getElementById('sql-btn').disabled = false;
+            } catch (duckErr) {
+              log(`🦆 DuckDB error: ${duckErr.message}`, 'error');
+              console.error('DuckDB error:', duckErr);
+            }
+          }
 
           // Renderizar dashboard
           updateDashboard();
@@ -555,26 +623,32 @@
       // Cargar datos
       function loadData() {
         if (!ws || ws.readyState !== WebSocket.OPEN) {
-          log("WebSocket not connected", "error");
+          log("WebSocket not connected - click Connect first", "error");
           return;
         }
 
-        const tenant = document.getElementById("tenant").value;
         const dataset = document.getElementById("dataset").value;
 
         document.getElementById("load-btn").disabled = true;
         chunks = [];
         startTime = performance.now();
 
-        log(`Requesting: ${tenant}/${dataset}`);
+        log(`Requesting: ${dataset}`);
 
         ws.send(
           JSON.stringify({
             action: "query",
-            tenant: tenant,
             dataset: dataset,
           })
         );
+      }
+      
+      // Reconnect WebSocket
+      function reconnect() {
+        if (ws) {
+          ws.close();
+        }
+        connectWebSocket();
       }
 
       function updateDashboard() {
@@ -798,11 +872,120 @@
         });
 
         log("Dashboard cleared");
+        document.getElementById('duckdb-status').textContent = 'Tabla vacía - carga datos primero';
+        document.getElementById('duckdb-status').style.color = '#f7931a';
+        document.getElementById('sql-btn').disabled = true;
+        document.getElementById('sql-results').innerHTML = '';
+      }
+      
+      // === DUCKDB WASM FUNCTIONS ===
+      async function initDuckDB() {
+        try {
+          log('🦆 Initializing DuckDB WASM...');
+          const statusEl = document.getElementById('duckdb-status');
+          
+          // Wait for DuckDB module to load (it's async)
+          let attempts = 0;
+          while (!window.DuckDB && attempts < 50) {
+            await new Promise(r => setTimeout(r, 100));
+            attempts++;
+          }
+          
+          if (!window.DuckDB) {
+            throw new Error('DuckDB module failed to load after 5 seconds');
+          }
+          
+          const JSDELIVR_BUNDLES = DuckDB.getJsDelivrBundles();
+          const bundle = await DuckDB.selectBundle(JSDELIVR_BUNDLES);
+          
+          const worker_url = URL.createObjectURL(
+            new Blob([`importScripts("${bundle.mainWorker}");`], { type: 'text/javascript' })
+          );
+          
+          const worker = new Worker(worker_url);
+          const logger = new DuckDB.ConsoleLogger();
+          duckDB = new DuckDB.AsyncDuckDB(logger, worker);
+          
+          await duckDB.instantiate(bundle.mainModule, bundle.pthreadWorker);
+          duckConn = await duckDB.connect();
+          duckDBReady = true;
+          
+          // Exponer para consola
+          window.query = async (sql) => {
+            const start = performance.now();
+            const result = await duckConn.query(sql);
+            const data = result.toArray().map(row => {
+              const obj = {};
+              for (const [k, v] of Object.entries(row)) {
+                obj[k] = typeof v === 'bigint' ? Number(v) : v;
+              }
+              return obj;
+            });
+            console.log(`Query completed in ${Math.round(performance.now() - start)}ms`);
+            console.table(data);
+            return data;
+          };
+          window.duckDB = duckDB;
+          window.duckConn = duckConn;
+          
+          statusEl.textContent = '✅ DuckDB listo - carga datos para usar SQL';
+          statusEl.style.color = '#1d9bf0';
+          log('🦆 DuckDB WASM ready! Use query("SQL") in console', 'success');
+          
+        } catch (err) {
+          log(`🦆 DuckDB init error: ${err.message}`, 'error');
+          console.error('DuckDB init error:', err);
+          document.getElementById('duckdb-status').textContent = '❌ Error initializing DuckDB';
+          document.getElementById('duckdb-status').style.color = '#f44';
+        }
+      }
+      
+      async function runSQLQuery() {
+        const sql = document.getElementById('sql-input').value.trim();
+        if (!sql || !duckDBReady) return;
+        
+        const resultsEl = document.getElementById('sql-results');
+        const btn = document.getElementById('sql-btn');
+        btn.disabled = true;
+        
+        try {
+          const start = performance.now();
+          const result = await duckConn.query(sql);
+          const data = result.toArray();
+          const queryTime = Math.round(performance.now() - start);
+          
+          if (data.length === 0) {
+            resultsEl.innerHTML = '<p style="color: #71767b;">No results</p>';
+          } else {
+            const columns = Object.keys(data[0]);
+            let html = '<table style="width: 100%; border-collapse: collapse; font-size: 12px;">';
+            html += '<thead><tr>' + columns.map(c => `<th style="text-align: left; padding: 0.5rem; border-bottom: 1px solid #2f3336; color: #71767b;">${c}</th>`).join('') + '</tr></thead>';
+            html += '<tbody>';
+            data.slice(0, 100).forEach(row => {
+              html += '<tr>' + columns.map(c => {
+                let val = row[c];
+                if (typeof val === 'bigint') val = Number(val);
+                if (typeof val === 'number') val = val.toLocaleString();
+                return `<td style="padding: 0.5rem; border-bottom: 1px solid #202e3a;">${val}</td>`;
+              }).join('') + '</tr>';
+            });
+            html += '</tbody></table>';
+            html += `<p style="margin-top: 0.5rem; font-size: 11px; color: #71767b;">${data.length} rows in ${queryTime}ms</p>`;
+            resultsEl.innerHTML = html;
+          }
+          
+          log(`🦆 SQL: ${data.length} rows in ${queryTime}ms`, 'success');
+        } catch (err) {
+          resultsEl.innerHTML = `<p style="color: #f44;">Error: ${err.message}</p>`;
+          log(`🦆 SQL error: ${err.message}`, 'error');
+        } finally {
+          btn.disabled = false;
+        }
       }
 
-      // Iniciar
-      connectWebSocket();
-      log("Dashboard ready. Connect to a tenant and load data.");
+      // Iniciar - Wait for session_id
+      initDuckDB();
+      log("Dashboard ready. Enter Session ID and click Connect.");     // Don't auto-connect - wait for user to enter session_id\r\n      initDuckDB();\r\n      log(\"Dashboard ready. Enter Session ID from Connector and click Connect.\");", "StartLine": 971, "TargetContent": "      // Iniciar\r\n      connectWebSocket();\r\n      initDuckDB();\r\n      log(\"Dashboard ready. Connect to a tenant and load data.\");
     </script>
   </body>
 </html>
