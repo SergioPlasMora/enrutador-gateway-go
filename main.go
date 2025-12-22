@@ -47,6 +47,17 @@ func main() {
 
 	// === CDP Edge Architecture Components ===
 
+	// WebSocket compression config
+	wsCompression := true // default enabled
+	if wc, ok := config["websocket_compression"].(string); ok {
+		wsCompression = wc == "true"
+	}
+	if wsCompression {
+		log.Printf("[Main] WebSocket compression: ENABLED (permessage-deflate)")
+	} else {
+		log.Printf("[Main] WebSocket compression: DISABLED")
+	}
+
 	// Control Plane client for session validation
 	controlPlane := NewControlPlaneClient()
 	log.Printf("[Main] Control Plane URL: %s", controlPlane.baseURL)
@@ -61,12 +72,12 @@ func main() {
 	}
 
 	// StreamServerV2 with Control Plane validation
-	streamServerV2 := NewStreamServerV2(registry, sessionManager)
+	streamServerV2 := NewStreamServerV2(registry, sessionManager, wsCompression)
 
 	// === End CDP Edge Components ===
 
 	// WebSocket endpoint for Data Connectors (reverse tunnel mode)
-	connectorWS := NewConnectorWSServer(registry)
+	connectorWS := NewConnectorWSServer(registry, wsCompression)
 	http.HandleFunc("/ws/connect", connectorWS.HandleConnection)
 
 	// Determinar modo de transporte para conectores

@@ -232,7 +232,7 @@
 
       #log {
         position: fixed;
-        bottom: 1rem;
+        bottom: 20rem;
         right: 1rem;
         width: 350px;
         max-height: 200px;
@@ -298,13 +298,22 @@
         <button onclick="reconnect()" class="secondary">🔄 Connect</button>
         <select id="dataset" style="width: 180px">
           <option value="dataset_1kb">dataset_1kb.json (1 KB)</option>
-          <option value="dataset_1mb">dataset_1mb.csv (1 MB)</option>
-          <option value="dataset_10mb" selected>dataset_10mb.csv (10 MB)</option>
-          <option value="dataset_20mb">dataset_20mb.csv (20 MB)</option>
-          <option value="dataset_30mb">dataset_30mb.csv (30 MB)</option>
-          <option value="dataset_40mb">dataset_40mb.csv (40 MB)</option>
-          <option value="dataset_50mb">dataset_50mb.csv (50 MB)</option>
-          <option value="dataset_100mb">dataset_100mb.csv (100 MB)</option>
+          <option value="dataset_1mb.csv">dataset_1mb.csv (1 MB)</option>
+          <option value="dataset_1mb.parquet">dataset_1mb.parquet (1 MB)</option>
+          <option value="dataset_10mb.csv" selected>dataset_10mb.csv (10 MB)</option>
+          <option value="dataset_10mb.parquet">dataset_10mb.parquet (10 MB)</option>
+          <option value="dataset_20mb.csv">dataset_20mb.csv (20 MB)</option>
+          <option value="dataset_20mb.parquet">dataset_20mb.parquet (20 MB)</option>
+          <option value="dataset_30mb.csv">dataset_30mb.csv (30 MB)</option>
+          <option value="dataset_30mb.parquet">dataset_30mb.parquet (30 MB)</option>
+          <option value="dataset_40mb.csv">dataset_40mb.csv (40 MB)</option>
+          <option value="dataset_40mb.parquet">dataset_40mb.parquet (40 MB)</option>
+          <option value="dataset_50mb.csv">dataset_50mb.csv (50 MB)</option>
+          <option value="dataset_50mb.parquet">dataset_50mb.parquet (50 MB)</option>
+          <option value="dataset_100mb.csv">dataset_100mb.csv (100 MB)</option>
+          <option value="dataset_100mb.parquet">dataset_100mb.parquet (100 MB)</option>
+          <option value="dataset_100mb.duckdb">dataset_100mb.duckdb (100 MB)</option>
+          <option value="dataset_500mb.duckdb">dataset_500mb.duckdb (500 MB)</option>
         </select>
         <button onclick="loadData()" id="load-btn">🚀 Load Data</button>
         <button onclick="clearData()" class="secondary">🗑️ Clear</button>
@@ -564,44 +573,89 @@
             "success"
           );
           
-          // === DUCKDB WASM: Cargar datos desde allData ===
-          if (duckDBReady && allData.length > 0) {
+          // === DUCKDB WASM: Cargar Arrow IPC directamente ===
+          if (duckDBReady && combined.byteLength > 0) {
             try {
               const duckStart = performance.now();
               
               // Drop existing table
               await duckConn.query(`DROP TABLE IF EXISTS data`);
               
-              // Get column info from first row
-              const cols = Object.keys(allData[0]);
-              
-              // Create table with text columns (simple approach)
-              const colDefs = cols.map(c => `"${c}" VARCHAR`).join(', ');
-              await duckConn.query(`CREATE TABLE data (${colDefs})`);
-              
-              // Insert data in batches for performance
-              const batchSize = 1000;
-              for (let i = 0; i < allData.length; i += batchSize) {
-                const batch = allData.slice(i, i + batchSize);
-                const values = batch.map(row => 
-                  '(' + cols.map(c => {
-                    const v = row[c];
-                    if (v === null || v === undefined) return 'NULL';
-                    if (typeof v === 'number' || typeof v === 'bigint') return String(v);
-                    return `'${String(v).replace(/'/g, "''")}'`;
-                  }).join(', ') + ')'
-                ).join(', ');
-                await duckConn.query(`INSERT INTO data VALUES ${values}`);
+              // Method 1: Try to insert Arrow from IPC Stream directly
+              // DuckDB WASM has insertArrowFromIPCStream on the connection
+              if (typeof duckConn.insertArrowFromIPCStream === 'function') {
+                await duckConn.insertArrowFromIPCStream(combined, { name: 'data' });
+                
+                const countResult = await duckConn.query(`SELECT COUNT(*) as cnt FROM data`);
+                const rowCount = Number(countResult.toArray()[0].cnt);
+                
+                const duckTime = Math.round(performance.now() - duckStart);
+                log(`🦆 DuckDB: ${formatNumber(rowCount)} rows loaded via Arrow IPC in ${duckTime}ms`, 'success');
+                document.getElementById('duckdb-status').textContent = `✅ Tabla 'data' lista: ${formatNumber(rowCount)} filas`;
+                document.getElementById('duckdb-status').style.color = '#00ba7c';
+                document.getElementById('sql-btn').disabled = false;
+              } else {
+                // If insertArrowFromIPCStream doesn't exist, throw to trigger fallback
+                throw new Error('insertArrowFromIPCStream not available, using fallback');
               }
-              
-              const duckTime = Math.round(performance.now() - duckStart);
-              log(`🦆 DuckDB: ${formatNumber(allData.length)} rows loaded in ${duckTime}ms`, 'success');
-              document.getElementById('duckdb-status').textContent = `✅ Tabla 'data' lista: ${formatNumber(allData.length)} filas`;
-              document.getElementById('duckdb-status').style.color = '#00ba7c';
-              document.getElementById('sql-btn').disabled = false;
             } catch (duckErr) {
-              log(`🦆 DuckDB error: ${duckErr.message}`, 'error');
-              console.error('DuckDB error:', duckErr);
+              // Fallback: Try inserting from the parsed allData if Arrow IPC fails
+              log(`🦆 Arrow IPC failed, trying JSON fallback...`, 'info');
+              try {
+                await duckConn.query(`DROP TABLE IF EXISTS data`);
+                
+                // Limit to prevent memory issues - sample if too large
+                const maxRows = 50000;
+                const dataToLoad = allData.length > maxRows 
+                  ? allData.filter((_, i) => i % Math.ceil(allData.length / maxRows) === 0)
+                  : allData;
+                
+                const cols = Object.keys(dataToLoad[0]);
+                
+                // Infer types from data - be conservative
+                const colTypes = cols.map(c => {
+                  const sample = dataToLoad.slice(0, 100).map(r => r[c]).filter(v => v != null);
+                  if (sample.every(v => typeof v === 'number' && Number.isFinite(v))) return 'DOUBLE';
+                  if (sample.every(v => typeof v === 'bigint')) return 'BIGINT';
+                  return 'VARCHAR';
+                });
+                
+                const colDefs = cols.map((c, i) => `"${c}" ${colTypes[i]}`).join(', ');
+                await duckConn.query(`CREATE TABLE data (${colDefs})`);
+                
+                // Insert in smaller batches to avoid memory issues
+                const batchSize = 500;
+                for (let i = 0; i < dataToLoad.length; i += batchSize) {
+                  const batch = dataToLoad.slice(i, i + batchSize);
+                  const values = batch.map(row => 
+                    '(' + cols.map((c, idx) => {
+                      const v = row[c];
+                      if (v === null || v === undefined) return 'NULL';
+                      if (colTypes[idx] === 'DOUBLE' || colTypes[idx] === 'BIGINT') {
+                        return typeof v === 'bigint' ? String(v) : String(Number(v) || 0);
+                      }
+                      return `'${String(v).replace(/'/g, "''").substring(0, 1000)}'`;
+                    }).join(', ') + ')'
+                  ).join(', ');
+                  await duckConn.query(`INSERT INTO data VALUES ${values}`);
+                  
+                  // Progress update
+                  if (i % 5000 === 0 && i > 0) {
+                    log(`🦆 Loading... ${Math.round(i/dataToLoad.length*100)}%`);
+                  }
+                }
+                
+                const duckTime = Math.round(performance.now() - duckStart);
+                log(`🦆 DuckDB: ${formatNumber(dataToLoad.length)} rows loaded in ${duckTime}ms (fallback)`, 'success');
+                document.getElementById('duckdb-status').textContent = `✅ Tabla 'data' lista: ${formatNumber(dataToLoad.length)} filas`;
+                document.getElementById('duckdb-status').style.color = '#00ba7c';
+                document.getElementById('sql-btn').disabled = false;
+              } catch (fallbackErr) {
+                log(`🦆 DuckDB error: ${fallbackErr.message}`, 'error');
+                console.error('DuckDB fallback error:', fallbackErr);
+                document.getElementById('duckdb-status').textContent = '⚠️ Error cargando datos - intenta con dataset más pequeño';
+                document.getElementById('duckdb-status').style.color = '#f7931a';
+              }
             }
           }
 

@@ -40,10 +40,15 @@ func (s *ConnectorGRPCServer) Start() error {
 		return fmt.Errorf("failed to listen: %w", err)
 	}
 
-	s.grpcServer = grpc.NewServer()
+	// Allow larger messages for data transfer (100MB)
+	maxMsgSize := 100 * 1024 * 1024 // 100 MB
+	s.grpcServer = grpc.NewServer(
+		grpc.MaxRecvMsgSize(maxMsgSize),
+		grpc.MaxSendMsgSize(maxMsgSize),
+	)
 	pb.RegisterConnectorServiceServer(s.grpcServer, s)
 
-	log.Printf("[ConnectorGRPC] Starting gRPC server on :%d (native protobuf)", s.port)
+	log.Printf("[ConnectorGRPC] Starting gRPC server on :%d (native protobuf, max msg: %dMB)", s.port, maxMsgSize/(1024*1024))
 	return s.grpcServer.Serve(lis)
 }
 

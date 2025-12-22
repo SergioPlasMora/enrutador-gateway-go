@@ -20,13 +20,14 @@ type StreamServerV2 struct {
 }
 
 // NewStreamServerV2 creates a new v2 stream server with Control Plane validation
-func NewStreamServerV2(registry *ConnectorRegistry, sessionManager *SessionManager) *StreamServerV2 {
+func NewStreamServerV2(registry *ConnectorRegistry, sessionManager *SessionManager, enableCompression bool) *StreamServerV2 {
 	return &StreamServerV2{
 		registry:       registry,
 		sessionManager: sessionManager,
 		upgrader: websocket.Upgrader{
-			ReadBufferSize:  1024 * 64,
-			WriteBufferSize: 1024 * 1024,
+			ReadBufferSize:    1024 * 64,
+			WriteBufferSize:   1024 * 1024,
+			EnableCompression: enableCompression, // configurable permessage-deflate
 			CheckOrigin: func(r *http.Request) bool {
 				return true
 			},

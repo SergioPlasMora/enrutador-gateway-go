@@ -5,6 +5,11 @@
 transport_mode: "grpc"
 grpc_port: 50051
 
+# Compresión WebSocket (permessage-deflate)
+# true = ~50% reducción de ancho de banda, +2x CPU
+# false = máximo rendimiento, sin compresión
+websocket_compression: true
+
 # Puerto HTTP (WebSocket para browsers + Dashboard)
 http_port: 8081
 

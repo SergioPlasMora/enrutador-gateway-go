@@ -20,12 +20,13 @@ type ConnectorWSServer struct {
 }
 
 // NewConnectorWSServer creates a new WebSocket server for connector connections
-func NewConnectorWSServer(registry *ConnectorRegistry) *ConnectorWSServer {
+func NewConnectorWSServer(registry *ConnectorRegistry, enableCompression bool) *ConnectorWSServer {
 	return &ConnectorWSServer{
 		registry: registry,
 		upgrader: websocket.Upgrader{
-			ReadBufferSize:  1024 * 64,
-			WriteBufferSize: 1024 * 1024,
+			ReadBufferSize:    1024 * 64,
+			WriteBufferSize:   1024 * 1024,
+			EnableCompression: enableCompression, // configurable permessage-deflate
 			CheckOrigin: func(r *http.Request) bool {
 				return true
 			},
