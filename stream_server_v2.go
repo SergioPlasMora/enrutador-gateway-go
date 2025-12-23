@@ -37,14 +37,15 @@ func NewStreamServerV2(registry *ConnectorRegistry, sessionManager *SessionManag
 
 // StreamResponseV2 represents responses to the client
 type StreamResponseV2 struct {
-	Status     string `json:"status"`
-	Message    string `json:"message,omitempty"`
-	Error      string `json:"error,omitempty"`
-	TotalBytes int64  `json:"total_bytes,omitempty"`
-	Chunks     int    `json:"chunks,omitempty"`
-	UserID     string `json:"user_id,omitempty"`
-	CuentaID   string `json:"cuenta_id,omitempty"`
-	SessionID  string `json:"session_id,omitempty"`
+	Status      string `json:"status"`
+	Message     string `json:"message,omitempty"`
+	Error       string `json:"error,omitempty"`
+	TotalBytes  int64  `json:"total_bytes,omitempty"`
+	Chunks      int    `json:"chunks,omitempty"`
+	UserID      string `json:"user_id,omitempty"`
+	CuentaID    string `json:"cuenta_id,omitempty"`
+	SessionID   string `json:"session_id,omitempty"`
+	Compression string `json:"compression,omitempty"` // 'zstd' o 'none' - indica al browser cómo descomprimir
 }
 
 // HandleStream handles WebSocket connections at /stream/{session_id}
@@ -214,8 +215,9 @@ func (s *StreamServerV2) handleQuery(ws *websocket.Conn, writeMu *sync.Mutex, se
 	}()
 
 	s.sendResponse(ws, writeMu, StreamResponseV2{
-		Status:  "streaming",
-		Message: "starting data transfer",
+		Status:      "streaming",
+		Message:     "starting data transfer",
+		Compression: "zstd", // Data Connector envía datos comprimidos con ZSTD
 	})
 
 	log.Printf("[StreamV2] Query started: session=%s cuenta=%s dataset=%s",

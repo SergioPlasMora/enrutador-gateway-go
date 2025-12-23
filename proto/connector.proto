@@ -81,6 +81,7 @@ message StreamStatus {
   int32 total_partitions = 4;
   int64 total_bytes = 5;
   string error = 6;
+  string compression = 7;  // 'zstd' o 'none' - indica cómo descomprimir
 }
 
 // ============== Heartbeat ==============
