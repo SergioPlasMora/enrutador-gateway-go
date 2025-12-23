@@ -33,6 +33,9 @@ COPY --from=builder /app/templates ./templates/
 # Copy config if exists
 COPY config.yaml ./
 
+# Copy mTLS certificates if they exist
+COPY certs/ ./certs/
+
 # Expose ports
 EXPOSE 8081 8815
 

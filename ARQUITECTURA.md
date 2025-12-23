@@ -2,17 +2,18 @@
 
 ## Visión General
 
-Esta plataforma permite el streaming de datos en tiempo real desde múltiples fuentes de datos distribuidas hasta clientes web, utilizando **Apache Arrow IPC** para transferencia binaria de alta eficiencia y **WebSocket** como transporte.
+Esta plataforma permite el streaming de datos en tiempo real desde múltiples fuentes de datos distribuidas hasta clientes web, utilizando **Apache Arrow IPC** para transferencia binaria de alta eficiencia, **gRPC** con **mTLS** para comunicación segura entre connectors y gateway, y **WebSocket** para browsers.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                    ARQUITECTURA ACTUAL (WebSocket)                          │
+│                    ARQUITECTURA ACTUAL (gRPC + mTLS)                        │
 │                                                                             │
-│   ┌─────────────┐      WebSocket       ┌──────────────┐      WebSocket     │
-│   │             │    Reverse Tunnel    │              │     Arrow IPC      │
+│   ┌─────────────┐     gRPC + mTLS      ┌──────────────┐      WebSocket     │
+│   │             │   Bidirectional      │              │     Arrow IPC      │
 │   │   Data      │◄────────────────────▶│   Gateway    │◄──────────────────▶│
-│   │  Connector  │    /ws/connect       │     (Go)     │  /stream/{session} │
-│   │  (Python)   │      :8081           │              │       :8081        │
+│   │  Connector  │   Arrow IPC          │     (Go)     │  /stream/{session} │
+│   │  (Python)   │      :50051          │              │       :8081        │
+│   │  🔐 cert    │   🔐 mTLS auth       │  🔐 CA       │                    │
 │   └─────────────┘                      └──────┬───────┘                    │
 │         │                                     │                           │
 │         │  Arrow IPC                          │  HTTP                      │
@@ -71,81 +72,15 @@ Apache Arrow es un proyecto de la Apache Software Foundation que define:
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Nuestra Decisión: Arrow IPC + WebSocket
+### Nuestra Decisión: Arrow IPC + gRPC + mTLS
 
-| Aspecto | Arrow Flight (gRPC) | Nuestra Solución (WebSocket + Arrow IPC) |
+| Aspecto | Arrow Flight (gRPC) | Nuestra Solución (gRPC + mTLS + Arrow IPC) |
 |---------|---------------------|------------------------------------------|
-| **Transporte** | gRPC (HTTP/2) | WebSocket |
+| **Transporte** | gRPC (HTTP/2) | gRPC + mTLS (HTTP/2) |
 | **Datos** | Arrow IPC | Arrow IPC ✅ |
-| **Puertos** | Servidor escucha (50051) | Reverse tunnel (cliente inicia) |
-| **Browser support** | ❌ Requiere proxy | ✅ Nativo |
-| **Firewall** | ⚠️ Puertos abiertos | ✅ Solo salientes |
-
----
-
-## Evolución de la Arquitectura
-
-### ANTES: Arquitectura gRPC (Arrow Flight)
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    ARQUITECTURA ANTERIOR (gRPC)                             │
-│                                                                             │
-│  ┌─────────────┐       gRPC           ┌──────────────┐      WebSocket      │
-│  │             │    Arrow Flight      │              │      Arrow IPC      │
-│  │   Data      │──────────────────────▶   Gateway    │────────────────────▶│
-│  │  Connector  │      :50051          │     (Go)     │       :8080         │
-│  │  (Python)   │                      │              │                     │
-│  │             │   El Gateway         └──────────────┘                     │
-│  │  SERVIDOR   │   INICIA la                                               │
-│  │  (escucha)  │   conexión                                                │
-│  └─────────────┘                                                           │
-│                                                                            │
-│  ❌ PROBLEMAS:                                                             │
-│  • Requiere puerto 50051 abierto en firewall del cliente                   │
-│  • El connector debe ser accesible desde internet                          │
-│  • Configuración estática de IPs en el gateway                             │
-│                                                                            │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-**Flujo anterior:**
-1. Gateway lee `config.yaml` con IP:Puerto de cada conector
-2. Gateway abre conexión gRPC hacia el conector
-3. Conector debe tener puerto expuesto públicamente
-4. Browser → Gateway via WebSocket
-
-### AHORA: Arquitectura WebSocket (Reverse Tunnel)
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    ARQUITECTURA ACTUAL (WebSocket)                          │
-│                                                                             │
-│  ┌─────────────┐      WebSocket        ┌──────────────┐      WebSocket     │
-│  │             │    Reverse Tunnel     │              │      Arrow IPC     │
-│  │   Data      │◄─────────────────────▶│   Gateway    │◄──────────────────▶│
-│  │  Connector  │    /ws/connect        │     (Go)     │  /stream/{session} │
-│  │  (Python)   │      :8081            │              │       :8081        │
-│  │             │                       └──────────────┘                    │
-│  │  CLIENTE    │   El Connector                                            │
-│  │  (inicia)   │   INICIA la                                               │
-│  └─────────────┘   conexión                                                │
-│                                                                            │
-│  ✅ VENTAJAS:                                                              │
-│  • NO requiere puertos abiertos en el cliente                              │
-│  • Connector puede estar detrás de NAT/Firewall                            │
-│  • Registro dinámico (sin config.yaml)                                     │
-│  • Browser-native (WebSocket nativo)                                       │
-│                                                                            │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-**Flujo actual:**
-1. Connector inicia conexión WebSocket hacia el Gateway (`/ws/connect`)
-2. Connector se registra con su `tenant_id`
-3. Gateway almacena la conexión en `ConnectorRegistry`
-4. Browser solicita datos → Gateway reenvía por el WebSocket existente
-5. Connector responde con Arrow IPC bytes
+| **Autenticación** | Requiere implementación | mTLS con certificados ✅ |
+| **Browser support** | ❌ Requiere proxy | ✅ WebSocket para browsers |
+| **Seguridad** | ⚠️ Opcional | ✅ mTLS obligatorio |
 
 ---
 
@@ -153,39 +88,48 @@ Apache Arrow es un proyecto de la Apache Software Foundation que define:
 
 ### 1. Data Connector (Python)
 
-**Rol:** Fuente de datos distribuida. Se conecta al Gateway via WebSocket.
+**Rol:** Fuente de datos distribuida. Se conecta al Gateway via gRPC con mTLS.
 
 **Características:**
-- Cliente WebSocket hacia Gateway (`/ws/connect`)
+- Cliente gRPC bidireccional hacia Gateway (`:50051`)
+- Autenticación mutua con certificados (mTLS)
 - Lee archivos CSV, JSON, Parquet, bases de datos
 - Convierte datos a Apache Arrow Tables
-- Envía RecordBatches como bytes Arrow IPC
+- Envía RecordBatches como bytes Arrow IPC via Protobuf
 
 **Archivos principales:**
+
 | Archivo | Función |
 |---------|---------|
 | `service.py` | Punto de entrada, Windows Service |
-| `connector.py` | Lógica WebSocket, protocolo de mensajes |
+| `connector_grpc.py` | Cliente gRPC con mTLS, protocolo protobuf |
 | `data_loader.py` | Carga y serializa datos a Arrow IPC |
 | `config.yml` | Configuración del conector |
+| `certs/` | Certificados mTLS (client.crt, client.key, ca.crt) |
 
-**Protocolo de mensajes:**
-```json
+**Protocolo de mensajes (Protobuf):**
+
+```protobuf
 // Registro (connector → gateway)
-{"action": "register", "tenant_id": "abc-123", "version": "1.0.0", "datasets": ["ventas"]}
-
-// Respuesta (gateway → connector)
-{"status": "ok", "data": {"session_id": "xyz"}}
+message RegisterRequest {
+  string tenant_id = 1;
+  string version = 2;
+  repeated string datasets = 3;
+}
 
 // Query (gateway → connector)
-{"action": "get_flight_info", "request_id": "req-1", "descriptor": {"path": ["ventas"]}}
-{"action": "do_get", "request_id": "req-2", "ticket": "ventas"}
+message GetFlightInfoRequest {
+  repeated string path = 1;
+}
+
+message DoGetRequest {
+  string ticket = 1;
+}
 
 // Respuesta de datos (connector → gateway)
-{"request_id": "req-2", "type": "stream_start", "schema": "base64..."}
-[BINARY: Arrow IPC bytes]
-[BINARY: Arrow IPC bytes]
-{"request_id": "req-2", "type": "stream_end", "total_bytes": 1234567}
+message ArrowChunk {
+  bytes data = 1;  // Arrow IPC bytes
+}
 ```
 
 ---
@@ -195,21 +139,23 @@ Apache Arrow es un proyecto de la Apache Software Foundation que define:
 **Rol:** Router central. Conecta browsers con connectors. Valida sesiones.
 
 **Características:**
-- Servidor WebSocket para connectors (`/ws/connect`)
+- Servidor gRPC con mTLS para connectors (`:50051`)
 - Servidor WebSocket para browsers (`/stream/{session_id}`)
+- Extrae `tenant_id` del certificado CN
 - Validación de sesiones con Control Plane
 - Multi-tenant: soporta múltiples connectors simultáneos
 
 **Archivos principales:**
+
 | Archivo | Función |
 |---------|---------|
 | `main.go` | Punto de entrada, configuración |
 | `connector_registry.go` | Gestiona conexiones de connectors |
-| `connector_ws.go` | WebSocket handler para connectors |
+| `connector_grpc.go` | Servidor gRPC con mTLS para connectors |
 | `stream_server_v2.go` | WebSocket handler para browsers |
 | `session_manager.go` | Gestión de sesiones con Control Plane |
 | `redis_subscriber.go` | Revocación en tiempo real |
-| `control_plane_client.go` | Validación con luzzi-core-im |
+| `certs/` | Certificados mTLS (server.crt, server.key, ca.crt) |
 
 ---
 
@@ -228,7 +174,7 @@ Apache Arrow es un proyecto de la Apache Software Foundation que define:
 2. luzzi-core-im genera `session_id` firmado
 3. Browser conecta a Gateway con `session_id`
 4. Gateway valida con Control Plane
-5. Browser solicita datos, Gateway reenvía al Connector
+5. Browser solicita datos, Gateway reenvía al Connector via gRPC
 6. Browser recibe Arrow IPC, parsea y visualiza
 
 ---
@@ -237,31 +183,32 @@ Apache Arrow es un proyecto de la Apache Software Foundation que define:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│                         FLUJO DE DATOS (WebSocket)                           │
+│                         FLUJO DE DATOS (gRPC + mTLS)                         │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│  INICIO: Connector se registra                                               │
-│  ═══════════════════════════════                                             │
-│  1. Connector → Gateway: WebSocket connect /ws/connect                       │
-│  2. Connector → Gateway: {"action":"register","tenant_id":"abc-123"}         │
-│  3. Gateway → Connector: {"status":"ok","data":{"session_id":"xyz"}}         │
+│  INICIO: Connector se registra via gRPC con mTLS                             │
+│  ════════════════════════════════════════════════                            │
+│  1. Connector → Gateway: gRPC TLS handshake (mTLS)                           │
+│  2. Gateway valida certificado, extrae tenant_id del CN                      │
+│  3. Connector → Gateway: RegisterRequest{tenant_id, version, datasets}       │
+│  4. Gateway → Connector: RegisterResponse{status:"ok", session_id}           │
 │     └── Connector queda registrado y esperando comandos                      │
 │                                                                              │
 │  QUERY: Browser solicita datos                                               │
 │  ═════════════════════════════                                               │
-│  4. Browser → Gateway: WebSocket connect /stream/{session_id}                │
-│  5. Gateway → Control Plane: Validar session_id                              │
-│  6. Control Plane → Gateway: {user_id, cuenta_id, permisos}                  │
-│  7. Browser → Gateway: {"action":"query","dataset":"ventas"}                 │
-│  8. Gateway → Connector: {"action":"get_flight_info","request_id":"r1",...}  │
-│  9. Connector → Gateway: {"request_id":"r1","data":{schema,records}}         │
-│ 10. Gateway → Connector: {"action":"do_get","request_id":"r2",...}           │
-│ 11. Connector → Gateway: [Arrow IPC binary chunks]                           │
-│ 12. Gateway → Browser: [Forward Arrow IPC chunks]                            │
+│  5. Browser → Gateway: WebSocket connect /stream/{session_id}                │
+│  6. Gateway → Control Plane: Validar session_id                              │
+│  7. Control Plane → Gateway: {user_id, cuenta_id, permisos}                  │
+│  8. Browser → Gateway: {action:"query", dataset:"ventas"}                    │
+│  9. Gateway → Connector: GetFlightInfoRequest{path:["ventas"]}               │
+│ 10. Connector → Gateway: FlightInfoResponse{partitions, schema}              │
+│ 11. Gateway → Connector: DoGetRequest{ticket:"ventas"}                       │
+│ 12. Connector → Gateway: [ArrowChunk{data: bytes}...]                        │
+│ 13. Gateway → Browser: [Forward Arrow IPC chunks via WebSocket]              │
 │                                                                              │
 │  FIN: Browser renderiza                                                      │
 │  ═══════════════════════                                                     │
-│ 13. Browser: tableFromIPC(bytes) → JavaScript Array → Chart.js               │
+│ 14. Browser: tableFromIPC(bytes) → JavaScript Array → Chart.js               │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -272,11 +219,11 @@ Apache Arrow es un proyecto de la Apache Software Foundation que define:
 
 | Puerto | Protocolo | Dirección | Descripción |
 |--------|-----------|-----------|-------------|
-| **8081** | WebSocket | Connector → Gateway | Reverse tunnel, registro dinámico |
+| **50051** | gRPC + mTLS | Connector → Gateway | Túnel bidireccional con autenticación mutua |
 | **8081** | WebSocket | Browser → Gateway | Stream de datos (`/stream/{session_id}`) |
 | **8081** | HTTP | Gateway | Dashboard, health check |
 
-> **Nota:** Ya no se usa el puerto 50051 (gRPC). Todo pasa por WebSocket en puerto 8081.
+> **Nota:** La comunicación Connector ↔ Gateway usa gRPC con mTLS para máxima seguridad. Los browsers usan WebSocket.
 
 ---
 
@@ -287,7 +234,6 @@ Apache Arrow es un proyecto de la Apache Software Foundation que define:
 - Zero-copy cuando es posible
 - Cross-language (Python → Go → JavaScript)
 - Streaming nativo con RecordBatches
-- Sin overhead de gRPC
 
 ```
 ┌────────────────────────────────────────┐
@@ -302,18 +248,93 @@ Apache Arrow es un proyecto de la Apache Software Foundation que define:
 │ RecordBatch N                          │
 └────────────────────────────────────────┘
 
-Transferido como: websocket.BinaryMessage
+Transferido como: Protobuf ArrowChunk (bytes)
 ```
 
 ---
 
 ## Seguridad
 
-### Validación de Sesiones (CDP Edge Architecture)
+### mTLS (Mutual TLS) - Autenticación de Connectors
+
+La comunicación entre Data Connectors y Gateway está protegida con **mTLS (Mutual Transport Layer Security)**, que proporciona autenticación mutua criptográfica.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         mTLS (Mutual TLS)                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌──────────────┐                                    ┌──────────────┐       │
+│  │   Data       │                                    │   Gateway    │       │
+│  │  Connector   │                                    │    (Go)      │       │
+│  │  (Python)    │                                    │              │       │
+│  │              │                                    │  Tiene:      │       │
+│  │  Tiene:      │                                    │  • server.crt│       │
+│  │  • client.crt│                                    │  • server.key│       │
+│  │  • client.key│                                    │  • ca.crt    │       │
+│  │  • ca.crt    │                                    │              │       │
+│  └──────┬───────┘                                    └───────┬──────┘       │
+│         │                                                    │              │
+│         │  1. TLS Handshake (gRPC secure_channel)            │              │
+│         │─────────────────────────────────────────────────────▶             │
+│         │                                                    │              │
+│         │  2. Gateway presenta su certificado                │              │
+│         │◀─────────────────────────────────────────────────────             │
+│         │     📜 server.crt                                  │              │
+│         │                                                    │              │
+│         │  3. Connector valida: ✓ Firmado por CA            │              │
+│         │                                                    │              │
+│         │  4. Connector presenta su certificado              │              │
+│         │─────────────────────────────────────────────────────▶             │
+│         │     📜 client.crt (CN=tenant_id)                   │              │
+│         │                                                    │              │
+│         │  5. Gateway extrae tenant_id del CN               │              │
+│         │     y valida que coincida con el registro          │              │
+│         │                                                    │              │
+│         │  6. Conexión mTLS establecida                      │              │
+│         │◀════════════════════════════════════════════════════▶             │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Estructura de Certificados
+
+```
+certs/
+├── ca.crt              # CA root certificate (compartido)
+├── ca.key              # CA private key (¡PROTEGER!)
+├── server.crt          # Gateway certificate
+├── server.key          # Gateway private key
+└── clients/
+    └── {tenant_id}/
+        ├── client.crt  # Connector certificate (CN=tenant_id)
+        └── client.key  # Connector private key
+```
+
+#### Beneficios de mTLS
+
+| Característica | Descripción |
+|----------------|-------------|
+| **Autenticación mutua** | Tanto cliente como servidor verifican identidad |
+| **Identidad criptográfica** | tenant_id está en el CN del certificado |
+| **No hay credenciales en tránsito** | Sin tokens, API keys, o passwords |
+| **Revocación** | Revocar certificado = desconexión inmediata |
+| **Auto-detección** | mTLS se activa si existen los certificados |
+
+#### Generación de Certificados
+
+```bash
+cd certs/
+./generate_certs.sh all {tenant_id}
+```
+
+---
+
+### Validación de Sesiones (Browser → Gateway)
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│                         FLUJO DE SEGURIDAD                                   │
+│                         FLUJO DE SEGURIDAD (Browser)                         │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
 │  1. Usuario accede a Tableros en luzzi-core-im                               │
@@ -335,9 +356,16 @@ Transferido como: websocket.BinaryMessage
 ### Data Connector (`config.yml`)
 
 ```yaml
-# Conexión al Gateway
+# Conexión al Gateway via gRPC
 gateway:
-  uri: "ws://gateway.example.com:8081/ws/connect"
+  grpc_uri: "gateway.example.com:50051"
+  transport_mode: "grpc"
+
+# mTLS Certificates
+mtls:
+  ca_cert: "certs/ca.crt"
+  client_cert: "certs/client.crt"
+  client_key: "certs/client.key"
 
 # Identificación del tenant
 tenant:
@@ -345,7 +373,6 @@ tenant:
 
 # Rendimiento
 performance:
-  parallel_connections: 3  # Workers WebSocket simultáneos
   max_chunk_size: 16384
   reconnect_delay: 5
 
@@ -359,6 +386,11 @@ logging:
 ```yaml
 # Puertos
 http_port: 8081
+grpc_port: 50051
+transport_mode: "grpc"
+
+# mTLS (auto-detecta si existen los certificados)
+# certs/ca.crt, certs/server.crt, certs/server.key
 
 # Timeouts
 timeouts:
@@ -379,6 +411,9 @@ tableros_secret_key: "your-secret-key"
 # Instalar dependencias
 pip install -r requirements.txt
 
+# Copiar certificados
+cp /path/to/certs/* certs/
+
 # Ejecutar en modo test
 python service.py --test
 
@@ -393,6 +428,9 @@ python service.py start
 # Compilar
 go build -o enrutador-gateway-go.exe .
 
+# Asegurar que existen certificados
+ls certs/ca.crt certs/server.crt certs/server.key
+
 # Ejecutar
 ./enrutador-gateway-go.exe
 ```
@@ -403,9 +441,10 @@ go build -o enrutador-gateway-go.exe .
 
 | Componente | Tecnología | Función |
 |------------|------------|---------|
-| Data Connector | Python + PyArrow + WebSocket | Fuente de datos, reverse tunnel |
-| Gateway | Go + Gorilla WebSocket | Router central, validación |
-| Control Plane | luzzi-core-im (Django) | Autenticación, sesiones |
-| Browser | HTML + JS + Apache Arrow JS | Visualización |
+| Data Connector | Python + PyArrow + gRPC + mTLS | Fuente de datos, reverse tunnel |
+| Gateway | Go + gRPC + mTLS | Router central, validación, mTLS termination |
+| Control Plane | luzzi-core-im (FastAPI + Jinja2) | Autenticación, sesiones |
+| Browser | HTML + JS + Apache Arrow JS + WebSocket | Visualización |
 | Datos | Arrow IPC | Serialización binaria eficiente |
-| Transporte | WebSocket | Bidireccional, browser-native |
+| Transporte Connector | gRPC + mTLS | Bidireccional, autenticación mutua |
+| Transporte Browser | WebSocket | Bidireccional, browser-native |

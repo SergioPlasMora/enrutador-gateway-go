@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Arrow Dashboard + DuckDB WASM</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <!-- ZSTD decompression library for compressed Arrow IPC data -->
+    <script src="https://cdn.jsdelivr.net/npm/fzstd@0.1.1/umd/index.js"></script>
     <script type="module">
       import { tableFromIPC } from 'https://cdn.jsdelivr.net/npm/apache-arrow@14.0.2/+esm';
       import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.28.0/+esm';
@@ -534,14 +536,39 @@
         try {
           // Combinar chunks
           const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
-          const combined = new Uint8Array(totalLength);
+          let combined = new Uint8Array(totalLength);
           let offset = 0;
           for (const chunk of chunks) {
             combined.set(chunk, offset);
             offset += chunk.length;
           }
 
-          log(`Processing ${(totalLength / 1024 / 1024).toFixed(2)} MB...`);
+          log(`Received ${(totalLength / 1024 / 1024).toFixed(2)} MB...`);
+
+          // === ZSTD DECOMPRESSION ===
+          // Check for ZSTD magic number: 0x28B52FFD (little-endian)
+          const isZstdCompressed = combined.length >= 4 && 
+            combined[0] === 0x28 && 
+            combined[1] === 0xB5 && 
+            combined[2] === 0x2F && 
+            combined[3] === 0xFD;
+          
+          if (isZstdCompressed) {
+            const decompressStart = performance.now();
+            log(`🗜️ ZSTD detected, decompressing...`);
+            
+            // Use fzstd library (loaded as window.fzstd)
+            if (typeof fzstd !== 'undefined' && fzstd.decompress) {
+              combined = fzstd.decompress(combined);
+              const decompressTime = Math.round(performance.now() - decompressStart);
+              const ratio = (totalLength / combined.length * 100).toFixed(1);
+              log(`✓ Decompressed: ${(combined.length / 1024 / 1024).toFixed(2)} MB (${ratio}% ratio) in ${decompressTime}ms`, 'success');
+            } else {
+              log(`⚠️ fzstd library not loaded, trying raw parse...`, 'error');
+            }
+          }
+          
+          log(`Processing ${(combined.length / 1024 / 1024).toFixed(2)} MB...`);
 
           // Parsear Arrow IPC
           const table = Arrow.tableFromIPC(combined);

@@ -6,10 +6,12 @@ services:
     container_name: gateway-go
     ports:
       - "8081:8081" # HTTP/WebSocket
-      - "8815:8815" # Arrow Flight gRPC
+      - "50051:50051" # gRPC with mTLS
+    volumes:
+      - ./certs:/app/certs:ro  # Mount mTLS certificates (read-only)
     environment:
       - HTTP_PORT=8081
-      - FLIGHT_PORT=8815
+      - GRPC_PORT=50051
       # Control Plane URL - adjust based on your setup
       # If running luzzi-core-im in WSL Docker:
       - CONTROL_PLANE_URL=http://host.docker.internal:8000/api/v2/control
