@@ -70,6 +70,7 @@ DNS.3 = gateway.luzzi.com
 DNS.4 = *.luzzi.com
 IP.1 = 127.0.0.1
 IP.2 = ::1
+IP.3 = 192.99.247.70
 EOF
 
     # Generate server private key
