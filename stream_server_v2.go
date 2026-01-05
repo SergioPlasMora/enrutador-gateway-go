@@ -208,22 +208,18 @@ func (s *StreamServerV2) handleQuery(ws *websocket.Conn, writeMu *sync.Mutex, se
 
 	var totalBytes int64
 	chunkCount := 0
+	compressionDetected := "" // Will be "zstd" or "none"
 
 	errChan := make(chan error, 1)
 	go func() {
 		errChan <- s.registry.QueryDataToChannel(ctx, session.CuentaID, dataset, chunks)
 	}()
 
-	s.sendResponse(ws, writeMu, StreamResponseV2{
-		Status:      "streaming",
-		Message:     "starting data transfer",
-		Compression: "zstd", // Data Connector envía datos comprimidos con ZSTD
-	})
-
 	log.Printf("[StreamV2] Query started: session=%s cuenta=%s dataset=%s",
 		session.ID, session.CuentaID, dataset)
 
 	// Stream chunks to browser
+	firstChunk := true
 	for chunk := range chunks {
 		// Check if session was revoked
 		select {
@@ -231,6 +227,23 @@ func (s *StreamServerV2) handleQuery(ws *websocket.Conn, writeMu *sync.Mutex, se
 			log.Printf("[StreamV2] Session revoked during streaming: %s", session.ID)
 			return
 		default:
+		}
+
+		// Auto-detect compression from first chunk (ZSTD magic: 0x28B52FFD)
+		if firstChunk {
+			if len(chunk) >= 4 && chunk[0] == 0x28 && chunk[1] == 0xB5 && chunk[2] == 0x2F && chunk[3] == 0xFD {
+				compressionDetected = "zstd"
+			} else {
+				compressionDetected = "none"
+			}
+			// Send streaming status with detected compression BEFORE first data
+			s.sendResponse(ws, writeMu, StreamResponseV2{
+				Status:      "streaming",
+				Message:     "starting data transfer",
+				Compression: compressionDetected,
+			})
+			log.Printf("[StreamV2] Compression auto-detected: %s", compressionDetected)
+			firstChunk = false
 		}
 
 		writeMu.Lock()
