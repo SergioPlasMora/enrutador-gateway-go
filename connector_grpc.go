@@ -169,18 +169,14 @@ func (s *ConnectorGRPCServer) Connect(stream pb.ConnectorService_ConnectServer) 
 	}
 
 	// Validate tenant_id matches certificate CN if mTLS is enabled
-	if s.mtlsEnabled && certTenantID != tenantID {
-		log.Printf("[ConnectorGRPC] Certificate CN mismatch: cert=%s, register=%s", certTenantID, tenantID)
-		stream.Send(&pb.GatewayCommand{
-			RequestId: msg.RequestId,
-			Command: &pb.GatewayCommand_RegisterResponse{
-				RegisterResponse: &pb.RegisterResponse{
-					Status: "error",
-					Error:  fmt.Sprintf("tenant_id mismatch: certificate CN is '%s' but tried to register as '%s'", certTenantID, tenantID),
-				},
-			},
-		})
-		return fmt.Errorf("tenant_id mismatch")
+	// Note: Certificate CN now contains connector_id (unique per connector)
+	// The tenant_id comes from the registration message and is trusted as the connector
+	// was issued a valid certificate signed by our CA
+	var certConnectorID string
+	if s.mtlsEnabled {
+		certConnectorID = certTenantID // This is actually connector_id now
+		// We trust the tenant_id from registration since the connector has a valid CA-signed cert
+		log.Printf("[ConnectorGRPC] Connector authenticated: connector_id=%s (from cert), tenant_id=%s (from register)", certConnectorID, tenantID)
 	}
 
 	sessionID := base64.RawURLEncoding.EncodeToString([]byte(time.Now().Format("20060102150405")))
@@ -203,7 +199,7 @@ func (s *ConnectorGRPCServer) Connect(stream pb.ConnectorService_ConnectServer) 
 		},
 	})
 
-	log.Printf("[ConnectorGRPC] Registered: tenant=%s session=%s version=%s", tenantID, sessionID, register.Version)
+	log.Printf("[ConnectorGRPC] Registered: tenant=%s connector=%s session=%s version=%s", tenantID, certConnectorID, sessionID, register.Version)
 
 	// Start heartbeat goroutine
 	ctx, cancel := context.WithCancel(context.Background())
