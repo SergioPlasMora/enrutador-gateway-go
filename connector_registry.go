@@ -21,29 +21,33 @@ import (
 )
 
 // ConnectorRegistry mantiene el registro de conectores disponibles (gRPC y WebSocket)
+// Uses connector_id as primary key to support multiple connectors per tenant
 type ConnectorRegistry struct {
-	mu          sync.RWMutex
-	connectors  map[string]*ConnectorInfo     // tenant_id → info
-	clients     map[string]flight.Client      // tenant_id → flight client (legacy)
-	wsClients   map[string]*WSConnectorClient // tenant_id → WebSocket client
-	grpcClients map[string]interface{}        // tenant_id → gRPC bidirectional client (NativeGRPCClient or GRPCConnectorClient)
+	mu           sync.RWMutex
+	connectors   map[string]*ConnectorInfo     // connector_id → info
+	clients      map[string]flight.Client      // connector_id → flight client (legacy)
+	wsClients    map[string]*WSConnectorClient // connector_id → WebSocket client
+	grpcClients  map[string]interface{}        // connector_id → gRPC bidirectional client
+	tenantLookup map[string]string             // connector_id → tenant_id (for auth)
 }
 
 // ConnectorInfo contiene información de un conector
 type ConnectorInfo struct {
-	TenantID string `json:"tenant_id"`
-	Address  string `json:"address"` // host:port or "websocket" or "grpc"
-	Status   string `json:"status"`
-	Mode     string `json:"mode"` // "grpc", "websocket", or "grpc-bidi"
+	ConnectorID string `json:"connector_id"`
+	TenantID    string `json:"tenant_id"`
+	Address     string `json:"address"` // host:port or "websocket" or "grpc"
+	Status      string `json:"status"`
+	Mode        string `json:"mode"` // "grpc", "websocket", or "grpc-bidi"
 }
 
 // NewConnectorRegistry crea un nuevo registro de conectores
 func NewConnectorRegistry() *ConnectorRegistry {
 	return &ConnectorRegistry{
-		connectors:  make(map[string]*ConnectorInfo),
-		clients:     make(map[string]flight.Client),
-		wsClients:   make(map[string]*WSConnectorClient),
-		grpcClients: make(map[string]interface{}),
+		connectors:   make(map[string]*ConnectorInfo),
+		clients:      make(map[string]flight.Client),
+		wsClients:    make(map[string]*WSConnectorClient),
+		grpcClients:  make(map[string]interface{}),
+		tenantLookup: make(map[string]string),
 	}
 }
 
@@ -122,30 +126,35 @@ func (r *ConnectorRegistry) UnregisterWSConnector(tenantID string) {
 }
 
 // RegisterGRPCConnector registra un conector gRPC bidireccional
-func (r *ConnectorRegistry) RegisterGRPCConnector(tenantID string, client interface{}) {
+// connectorID is the unique identifier for this connector instance
+// tenantID is the workspace/account the connector belongs to
+func (r *ConnectorRegistry) RegisterGRPCConnector(connectorID, tenantID string, client interface{}) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.connectors[tenantID] = &ConnectorInfo{
-		TenantID: tenantID,
-		Address:  "grpc-bidi",
-		Status:   "connected",
-		Mode:     "grpc-bidi",
+	r.connectors[connectorID] = &ConnectorInfo{
+		ConnectorID: connectorID,
+		TenantID:    tenantID,
+		Address:     "grpc-bidi",
+		Status:      "connected",
+		Mode:        "grpc-bidi",
 	}
-	r.grpcClients[tenantID] = client
+	r.grpcClients[connectorID] = client
+	r.tenantLookup[connectorID] = tenantID
 
-	log.Printf("[ConnectorRegistry] Registered gRPC-Bidi: %s", tenantID)
+	log.Printf("[ConnectorRegistry] Registered gRPC-Bidi: connector=%s tenant=%s", connectorID, tenantID)
 }
 
 // UnregisterGRPCConnector elimina un conector gRPC del registro
-func (r *ConnectorRegistry) UnregisterGRPCConnector(tenantID string) {
+func (r *ConnectorRegistry) UnregisterGRPCConnector(connectorID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	delete(r.grpcClients, tenantID)
-	delete(r.connectors, tenantID)
+	delete(r.grpcClients, connectorID)
+	delete(r.connectors, connectorID)
+	delete(r.tenantLookup, connectorID)
 
-	log.Printf("[ConnectorRegistry] Unregistered gRPC-Bidi: %s", tenantID)
+	log.Printf("[ConnectorRegistry] Unregistered gRPC-Bidi: %s", connectorID)
 }
 
 // GetGRPCClient obtiene el cliente gRPC para un tenant

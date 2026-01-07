@@ -168,6 +168,13 @@ func (s *ConnectorGRPCServer) Connect(stream pb.ConnectorService_ConnectServer) 
 		return fmt.Errorf("empty tenant_id")
 	}
 
+	// Get connector_id from registration, fallback to tenant_id for legacy connectors
+	connectorID := register.ConnectorId
+	if connectorID == "" {
+		connectorID = tenantID // Legacy fallback
+		log.Printf("[ConnectorGRPC] No connector_id provided, using tenant_id as fallback: %s", tenantID)
+	}
+
 	// Validate tenant_id matches certificate CN if mTLS is enabled
 	// Note: Certificate CN now contains connector_id (unique per connector)
 	// The tenant_id comes from the registration message and is trusted as the connector
@@ -184,9 +191,9 @@ func (s *ConnectorGRPCServer) Connect(stream pb.ConnectorService_ConnectServer) 
 	// Create client wrapper
 	client := NewNativeGRPCClient(stream, tenantID, sessionID)
 
-	// Register with registry
-	s.registry.RegisterGRPCConnector(tenantID, client)
-	defer s.registry.UnregisterGRPCConnector(tenantID)
+	// Register with registry using connector_id as key
+	s.registry.RegisterGRPCConnector(connectorID, tenantID, client)
+	defer s.registry.UnregisterGRPCConnector(connectorID)
 
 	// Send confirmation
 	stream.Send(&pb.GatewayCommand{
@@ -199,7 +206,7 @@ func (s *ConnectorGRPCServer) Connect(stream pb.ConnectorService_ConnectServer) 
 		},
 	})
 
-	log.Printf("[ConnectorGRPC] Registered: tenant=%s connector=%s session=%s version=%s", tenantID, certConnectorID, sessionID, register.Version)
+	log.Printf("[ConnectorGRPC] Registered: connector=%s tenant=%s session=%s version=%s", connectorID, tenantID, sessionID, register.Version)
 
 	// Start heartbeat goroutine
 	ctx, cancel := context.WithCancel(context.Background())

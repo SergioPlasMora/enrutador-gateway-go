@@ -49,18 +49,21 @@ type StreamResponseV2 struct {
 }
 
 // HandleStream handles WebSocket connections at /stream/{session_id}
-// URL format: /stream/{session_id}
+// URL format: /stream/{session_id}?connector={connector_id}
 func (s *StreamServerV2) HandleStream(w http.ResponseWriter, r *http.Request) {
 	// 1. Extract session_id from URL path
 	path := strings.TrimPrefix(r.URL.Path, "/stream/")
 	sessionID := strings.Split(path, "/")[0]
+
+	// Extract connector_id from query params (new flow)
+	connectorID := r.URL.Query().Get("connector")
 
 	if sessionID == "" {
 		http.Error(w, `{"error":"missing session_id in URL"}`, http.StatusBadRequest)
 		return
 	}
 
-	log.Printf("[StreamV2] Connection request for session %s from %s", sessionID, r.RemoteAddr)
+	log.Printf("[StreamV2] Connection request for session %s connector=%s from %s", sessionID, connectorID, r.RemoteAddr)
 
 	// 2. Validate session with Control Plane (or get from cache)
 	session, err := s.sessionManager.GetOrCreateSession(sessionID)
@@ -68,6 +71,14 @@ func (s *StreamServerV2) HandleStream(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[StreamV2] Session validation error for %s: %v", sessionID, err)
 		http.Error(w, `{"error":"session validation failed"}`, http.StatusInternalServerError)
 		return
+	}
+
+	// Determine which connector to use:
+	// 1. From URL query param (new flow)
+	// 2. From session cuenta_id (legacy flow)
+	targetConnector := connectorID
+	if targetConnector == "" {
+		targetConnector = session.CuentaID
 	}
 
 	if session == nil {
@@ -78,13 +89,13 @@ func (s *StreamServerV2) HandleStream(w http.ResponseWriter, r *http.Request) {
 		connectedTenants := s.registry.GetConnectedTenants()
 		log.Printf("[StreamV2] DEBUG: Connected tenants: %v", connectedTenants)
 
-		if s.registry.IsConnected(sessionID) {
-			log.Printf("[StreamV2] DEBUG: Tenant %s is connected, creating debug session", sessionID)
+		if s.registry.IsConnected(targetConnector) {
+			log.Printf("[StreamV2] DEBUG: Connector %s is connected, creating debug session", targetConnector)
 			// Create a minimal debug session
 			session = &Session{
 				ID:        sessionID,
 				UserID:    "debug-user",
-				CuentaID:  sessionID,
+				CuentaID:  targetConnector,
 				ExpiresAt: time.Now().Add(1 * time.Hour),
 				CreatedAt: time.Now(),
 				done:      make(chan struct{}),
@@ -97,9 +108,9 @@ func (s *StreamServerV2) HandleStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 3. Verify that the edge/tenant is connected
-	if !s.registry.IsConnected(session.CuentaID) {
-		http.Error(w, `{"error":"tenant not connected: `+session.CuentaID+`"}`, http.StatusBadRequest)
+	// 3. Verify that the connector is connected
+	if !s.registry.IsConnected(targetConnector) {
+		http.Error(w, `{"error":"connector not connected: `+targetConnector+`"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -178,7 +189,7 @@ func (s *StreamServerV2) HandleStream(w http.ResponseWriter, r *http.Request) {
 				if dataset == "" {
 					dataset = session.Dataset
 				}
-				go s.handleQuery(ws, &writeMu, session, dataset)
+				go s.handleQuery(ws, &writeMu, session, dataset, targetConnector)
 
 			case "ping":
 				s.sendResponse(ws, &writeMu, StreamResponseV2{
@@ -196,8 +207,8 @@ func (s *StreamServerV2) HandleStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleQuery processes a data query
-func (s *StreamServerV2) handleQuery(ws *websocket.Conn, writeMu *sync.Mutex, session *Session, dataset string) {
+// handleQuery processes a data query using the specified connector
+func (s *StreamServerV2) handleQuery(ws *websocket.Conn, writeMu *sync.Mutex, session *Session, dataset string, connectorID string) {
 	s.sendResponse(ws, writeMu, StreamResponseV2{
 		Status:  "loading",
 		Message: "loading dataset: " + dataset,
@@ -212,11 +223,11 @@ func (s *StreamServerV2) handleQuery(ws *websocket.Conn, writeMu *sync.Mutex, se
 
 	errChan := make(chan error, 1)
 	go func() {
-		errChan <- s.registry.QueryDataToChannel(ctx, session.CuentaID, dataset, chunks)
+		errChan <- s.registry.QueryDataToChannel(ctx, connectorID, dataset, chunks)
 	}()
 
-	log.Printf("[StreamV2] Query started: session=%s cuenta=%s dataset=%s",
-		session.ID, session.CuentaID, dataset)
+	log.Printf("[StreamV2] Query started: session=%s connector=%s dataset=%s",
+		session.ID, connectorID, dataset)
 
 	// Stream chunks to browser
 	firstChunk := true

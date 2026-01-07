@@ -38,8 +38,9 @@ message GatewayCommand {
 // ============== Registro ==============
 message RegisterRequest {
   string tenant_id = 1;
-  string version = 2;
-  repeated string datasets = 3;
+  string connector_id = 2;  // Unique ID for this connector instance
+  string version = 3;
+  repeated string datasets = 4;
 }
 
 message RegisterResponse {

@@ -129,6 +129,41 @@ func main() {
 			activeSessions, activeUsers, redisConnected)
 	})
 
+	// List connected connectors endpoint (for Control Plane)
+	internalAPIKey := os.Getenv("INTERNAL_API_KEY")
+	http.HandleFunc("/api/connectors", func(w http.ResponseWriter, r *http.Request) {
+		// Validate internal API key
+		apiKey := r.Header.Get("X-Internal-API-Key")
+		if internalAPIKey != "" && apiKey != internalAPIKey {
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprintf(w, `{"error":"unauthorized"}`)
+			return
+		}
+
+		// Optional: filter by tenant_id
+		tenantID := r.URL.Query().Get("tenant_id")
+
+		connectors := registry.ListConnectors()
+		w.Header().Set("Content-Type", "application/json")
+
+		// Build JSON response
+		fmt.Fprintf(w, `{"connectors":[`)
+		first := true
+		for _, c := range connectors {
+			// Skip if tenant filter is set and doesn't match
+			if tenantID != "" && c.TenantID != tenantID {
+				continue
+			}
+			if !first {
+				fmt.Fprintf(w, `,`)
+			}
+			first = false
+			fmt.Fprintf(w, `{"id":"%s","tenant_id":"%s","name":"Connector %s","status":"connected","type":"arrow-flight"}`,
+				c.ConnectorID, c.TenantID, c.ConnectorID[:8])
+		}
+		fmt.Fprintf(w, `]}`)
+	})
+
 	// Iniciar servidor HTTP (Dashboard + WebSocket para browsers)
 	go func() {
 		addr := fmt.Sprintf(":%d", httpPort)
